@@ -43,7 +43,7 @@ something else is already pacing, for example VitaGrafix's frame-rate patches.
 |------|----------------------|------------|
 | Default | Nothing. Every call chains straight through. | The default. Anything that works. |
 | 60fps | Every display wait becomes a one-vblank wait. | Games that run at 30 by choice but draw fast enough for 60, and do not tie speed to the frame. |
-| 30fps | Two vblanks. | A 60 fps game that drops frames unevenly; a steady 30 feels better than 45 to 60. Also halves GPU work and heat. |
+| 30fps | Two vblanks. | A 60 fps game that drops frames unevenly; a steady 30 feels better than 45 to 60. |
 | 20fps | Three vblanks. | Heavy ports that cannot hold 30. |
 | Uncapped | Display waits return at once. The panel still shows one complete frame per refresh, the newest one. | Measuring what the game can draw, and games with their own timers that benefit from more frames. Never for speed-tied games. |
 | Tearing | Uncapped, and every flip takes effect immediately, mid-refresh. | The lowest latency the hardware allows, at the cost of visible seams. Needs the kernel module. |
