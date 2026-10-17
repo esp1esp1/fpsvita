@@ -62,9 +62,9 @@ Open the quick menu (hold PS) with a game running and scroll down:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  FPS:     [<]  30fps (game 60)  [>]                  [Save] │
-│  HUD:     [<]  Mini             [>]   [<]  TL  [>]          │
-│  Latency  [x] Lowlat   [x] Antilag   [<] off [>] Limiter    │
+│ ▣ FPS:     [<]  30fps (game 60)  [>]                 [Save] │
+│   HUD:     [<]  Mini  [>]                 Corner: [<] TL [>] │
+│   Latency: [ ] Lowlat  [ ] Antilag       Limiter: [<] off [>] │
 └─────────────────────────────────────────────────────────────┘
 ```
 

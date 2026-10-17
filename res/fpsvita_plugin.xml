@@ -16,6 +16,10 @@
     <style_text textobj="textobj1" id="fc_style_text_hud_green">
       <textobj font_size="19" max_line_count="1" font_color="0, 1, 0, 1" id="textobj1" />
     </style_text>
+    <!-- Row icon, drawn like PSVshellPlus's: a white PNG scaled to the row. -->
+    <style_plane color="1, 1, 1, 1" id="fc_style_plane_icon" planeobj="planeobj1">
+      <planeobj scale_mode_y="1" scale_mode_x="1" id="planeobj1" />
+    </style_plane>
   </styletable>
 
   <templatetable>
@@ -103,17 +107,24 @@
     </template>
 
     <!--
-      Single-row framecap control:
-        FPS: [<] 30fps [>]           Inj [checkbox]
+      Quick menu rows (shell/impose.cpp):
+        [icon] FPS:  [<] 30fps (game 60) [>]              Vsync [x]  [Save]
+               HUD:  [<] Full [>]                     Corner: [<] BL [>]
+           Latency:  [x] Lowlat  [x] Antilag        Limiter: [<] off [>]
 
-      Layout positions mirror PSVshellPlus's OC rows exactly for the
-      left section (label, down, value, up). The inject label and
-      checkbox occupy the right side where PSVshellPlus puts its
-      lock checkboxes.
+      Column grid as PSVshellPlus's rows: label at x=44, down button at
+      130, value at 198. Right-hand controls are anchored to the right
+      edge (anchor 2), where the system puts its own; the HUD corner and
+      the Limiter share one column so they line up.
     -->
     <template id="fc_template_impose">
       <group id="fc_group_impose_mode">
         <layout_hint size="728, 70, 0" />
+
+        <!-- Row icon at x=0, where PSVshellPlus draws its title icon -->
+        <plane style="fc_style_plane_icon" texture="tex_icon_fpsvita">
+          <layout_hint anchor="1, 4" pos="0, 0" />
+        </plane>
 
         <!-- "FPS:" label -->
         <text style="fc_style_text_impose" id="fc_text_impose_label"
@@ -138,15 +149,19 @@
           <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="440, 0" />
         </button>
 
+        <!-- Right-anchored widgets: a positive pos moves RIGHT (off screen);
+             the Save button at 7 is the system's own position for a
+             right-hand control, everything else steps left from it. -->
+
         <!-- "Vsync" label near the checkbox (hidden when autodetect on) -->
         <text style="fc_style_text_impose" id="fc_text_inject_label"
               label="fc_msg_inject">
-          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="145, 0" />
+          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-129, 0" />
         </text>
 
         <!-- Inject toggle checkbox (hidden when autodetect on) -->
         <check_box id="fc_check_inject">
-          <layout_hint align="2, 0" size="46, 46" anchor="2, 4" pos="85, 0" />
+          <layout_hint align="2, 0" size="46, 46" anchor="2, 4" pos="-73, 0" />
         </check_box>
 
         <!-- Save per-game button (hidden when no game running) -->
@@ -174,19 +189,24 @@
         </text>
         <button style="_common_default_style_button" id="fc_button_hud_up"
                 label="fc_msg_right">
-          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="372, 0" />
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="300, 0" />
         </button>
 
+        <!-- Overlay corner, right-anchored: label, down, value, up -->
+        <text style="fc_style_text_impose" id="fc_text_hud_pos_label"
+              label="fc_msg_corner">
+          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-165, 0" />
+        </text>
         <button style="_common_default_style_button" id="fc_button_hud_pos_down"
                 label="fc_msg_left">
-          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="430, 0" />
+          <layout_hint align="2, 0" size="48, 48" anchor="2, 4" pos="-107, 0" />
         </button>
         <text style="fc_style_text_impose" id="fc_text_hud_pos_value">
-          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="498, 0" />
+          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-55, 0" />
         </text>
         <button style="_common_default_style_button" id="fc_button_hud_pos_up"
                 label="fc_msg_right">
-          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="560, 0" />
+          <layout_hint align="2, 0" size="48, 48" anchor="2, 4" pos="7, 0" />
         </button>
 
       </group>
@@ -198,29 +218,30 @@
           <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="44, 0" />
         </text>
         <check_box id="fc_check_lowlat">
-          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="168, 0" />
+          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="164, 0" />
         </check_box>
         <text style="fc_style_text_impose" id="fc_text_lowlat_label" label="fc_msg_lowlat">
-          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="220, 0" />
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="216, 0" />
         </text>
         <check_box id="fc_check_jit">
-          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="314, 0" />
+          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="306, 0" />
         </check_box>
         <text style="fc_style_text_impose" id="fc_text_jit_label" label="fc_msg_jit">
-          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="366, 0" />
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="358, 0" />
+        </text>
+        <!-- Limiter, right-anchored in the same column as the HUD corner -->
+        <text style="fc_style_text_impose" id="fc_text_softcap_label" label="fc_msg_softcap">
+          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-165, 0" />
         </text>
         <button style="_common_default_style_button" id="fc_button_softcap_down" label="fc_msg_left">
-          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="476, 0" />
+          <layout_hint align="2, 0" size="48, 48" anchor="2, 4" pos="-107, 0" />
         </button>
         <text style="fc_style_text_impose" id="fc_text_softcap_value">
-          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="530, 0" />
+          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-55, 0" />
         </text>
         <button style="_common_default_style_button" id="fc_button_softcap_up" label="fc_msg_right">
-          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="580, 0" />
+          <layout_hint align="2, 0" size="48, 48" anchor="2, 4" pos="7, 0" />
         </button>
-        <text style="fc_style_text_impose" id="fc_text_softcap_label" label="fc_msg_softcap">
-          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="636, 0" />
-        </text>
       </group>
     </template>
   </templatetable>
@@ -248,7 +269,9 @@
     <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="tr" />
   </stringtable>
 
-  <texturetable />
+  <texturetable>
+    <texture src="texture/tex_icon_fpsvita.png" type="texture/png" id="tex_icon_fpsvita" />
+  </texturetable>
 
   <filetable />
 

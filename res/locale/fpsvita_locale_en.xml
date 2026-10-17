@@ -6,8 +6,9 @@
   <string src="Vsync" id="fc_msg_inject" />
   <string src="Save" id="fc_msg_save" />
   <string src="HUD:" id="fc_msg_hud" />
-  <string src="Latency" id="fc_msg_adv" />
+  <string src="Corner:" id="fc_msg_corner" />
+  <string src="Latency:" id="fc_msg_adv" />
   <string src="Lowlat" id="fc_msg_lowlat" />
   <string src="Antilag" id="fc_msg_jit" />
-  <string src="Limiter" id="fc_msg_softcap" />
+  <string src="Limiter:" id="fc_msg_softcap" />
 </stringset>
