@@ -164,3 +164,8 @@ install it together with the full set.
 
 GPL-3.0, see `LICENSE`. Third-party components and their licences are in
 `THIRD_PARTY_NOTICES.md`.
+
+## Vibecoding notice
+
+fpsvita was vibecoded with care. I'm not a developer, but I'm also not clueless. This software will be kept maintained in the future, and I'll respond to any issues.
+
