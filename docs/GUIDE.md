@@ -104,7 +104,7 @@ on input a whole frame old. Anti-lag does two things:
 - **Cost:** a sub-millisecond spin per controller read on games that poll on a stale sample;
   a vitaGL port that polls twice a frame pays about 3 ms, which it only notices if it is CPU
   bound. The sleep ends with 0.3 ms of busy-waiting for precision.
-- **Does nothing for** games that poll mid-frame (Road Rage 2): no sample is ever about to land
+- **Does nothing for** games that poll mid-frame (The Simpsons: Hit & Run): no sample is ever about to land
   when they read.
 
 ### Limiter (`limiter=<fps>`): a time-based cap without vsync

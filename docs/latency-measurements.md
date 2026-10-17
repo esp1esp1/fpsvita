@@ -20,7 +20,7 @@ The helper (the plugin that runs inside each game) records, for every frame:
 Every option was tested by playing the same part of a game twice, with the option off and then
 on, and comparing the first full measurement window. Titles: Metal Gear Solid 2 HD, The Wolf
 Among Us, Oddworld: Stranger's Wrath HD, The Swapper, Dead or Alive 5 Plus, Grim Fandango
-Remastered, Doom64EX, Galaxy on Fire 2 and Road Rage 2.
+Remastered, Doom64EX, Galaxy on Fire 2 and The Simpsons: Hit & Run (a homebrew port).
 
 ## 2. How the Vita samples the controller
 
@@ -67,7 +67,7 @@ Input to screen, same content, Antilag off and on. Frame rates were unchanged in
 | Dead or Alive 5 Plus (60), gameplay | 35 ms | 33 ms | the game already reads a fresh sample here |
 | Galaxy on Fire 2 (own rate) | 21 ms | 16 ms | fresh poll, two reads a frame |
 | Doom64EX (own rate), intro | 34 ms | 27 ms | fresh poll |
-| Road Rage 2 (30) | 32 ms | 32 ms | nothing: the game reads mid-frame, no sample is about to land |
+| The Simpsons: Hit & Run (30) | 32 ms | 32 ms | nothing: the game reads mid-frame, no sample is about to land |
 | Grim Fandango Remastered (30) | | | no clean pair: the two runs did not cover the same content |
 
 An earlier version of Antilag slept for most of the frame's spare time instead. At a 60 fps limit
