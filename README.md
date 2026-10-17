@@ -2,6 +2,11 @@
 
 Frame-rate limits, anti-lag and tearing for PS Vita games, controlled live from the quick menu.
 
+<p align="center">
+  <img src="docs/images/quick-menu.jpg" width="49%" alt="The fpsvita rows in the quick menu: FPS limit with Save, HUD mode and corner, Latency options" />
+  <img src="docs/images/overlay.jpg" width="49%" alt="The Full overlay over a game: FPS, limit, CPU time, input-to-screen latency, queue time" />
+</p>
+
 **What it does**
 
 - **Frame limit on the fly.** Default, 60, 30, 20, Uncapped or Tearing, switched while the game
