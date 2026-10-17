@@ -1,4 +1,6 @@
-# fpsvita - Frame-rate limits, anti-lag and tearing for PS Vita games, controlled live from the quick menu.
+# fpsvita
+
+Frame-rate limits, anti-lag and tearing for PS Vita games, controlled live from the quick menu.
 
 **What it does**
 
@@ -7,8 +9,9 @@
 - **Per-game profiles.** Save stores the whole row for that title; it is applied at every later
   launch and the global defaults come back when the game exits.
 - **Anti-lag.** Most games read the controller a hair before the new sample arrives and play on
-  input a whole frame old. Anti-lag fixes that: 11 to 25 ms less input-to-screen latency on
-  every capped title measured, with no change in frame rate.
+  input a whole frame old. Anti-lag fixes that: 11 to 24 ms less input-to-screen latency on
+  most of the titles measured, with no change in frame rate. It cannot help a game that
+  reads the controller mid-frame; the guide lists both kinds.
 - **Low latency, Limiter, Tearing.** One frame less in the display queue; a limiter for any
   rate (40, 45, 50) without vsync; and PC-style vsync-off tearing for the lowest latency the
   hardware allows.
@@ -80,8 +83,9 @@ the game's next launch. Limiter holds Uncapped games to a chosen rate without vs
 45 fps or for games that cannot be limited the normal way. The reasoning behind each, with
 numbers, is in [docs/GUIDE.md](docs/GUIDE.md).
 
-**Vsync checkbox.** Appears only when `vsync=auto` is turned off in `config.txt`. With auto on
-(the default) forced vsync engages by itself on the few games that never wait for the screen.
+**Vsync checkbox.** Appears only when `config.txt` has `vsync=0` or `vsync=1` instead of the
+default `vsync=auto`. With auto, forced vsync engages by itself on the few games that never
+wait for the screen. The checkbox is a global setting, not part of a title's profile.
 
 ## Overlay
 
@@ -101,7 +105,9 @@ install it together with the full set.
 ## Good to know
 
 - **Files.** `ur0:data/fpsvita/config.txt` holds the defaults, `state.txt` one profile line per
-  title. Plain text, written by the menu, safe to edit.
+  title. Plain text, written by the menu. `state.txt` is safe to edit at any time; the menu
+  only reads `config.txt` at boot and rewrites it on every change, so reboot after editing
+  that one.
 - **Other plugins.** Do not run Framecapper alongside fpsvita, both hook the same display
   waits. VitaGrafix coexists; its FPS patches show up as the `(game ..)` value. Other
   combinations are untested.

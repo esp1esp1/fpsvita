@@ -40,14 +40,6 @@
  * ------------------------------------------------------------------ */
 
 /*
- * SceAppMgrUser (library nid 0xA6605D6F, module SceDriverUser), nid
- * 0x3D816DFA. Distinct from _sceAppMgrGetAppParam2 (SceAppMgr, 0x26D43923).
- * No vitasdk header declares it, so without this the call is an implicit
- * declaration: no argument checking at all, and a hard error on GCC 14+/C23.
- */
-int sceAppMgrGetAppParam2(SceUID appId, int param, void *buf, SceSize bufSize);
-
-/*
  * Not declared by vitasdk.h (SceLibKernel exports it under this name). It returns
  * long long; the previous implicit declaration assumed int and read only r0,
  * which happened to work only because ARM is little-endian.
@@ -103,12 +95,12 @@ static tai_hook_ref_t  s_hookRef[HOOK_COUNT];
 
 static volatile uint32_t g_frame_count       = 0;
 static volatile uint32_t g_last_vblank_frame = 0;
-static uint32_t g_rate_t0 = 0; /* rate report window start */
 
-/* Debug log, one line per process the helper starts in. */
-/* Lines come from the submit thread (probe) and the display thread (rate),
- * and interleaved once; one writer at a time, the rest wait up to 20 ms
- * and then drop their line rather than stall a game thread on flash. */
+/* Debug log: a few lines per process the helper starts in, all at startup
+ * (module_start, late modules, GXM init); dev builds add the probe and rate
+ * lines from game threads. Lines from two threads interleaved once, so one
+ * writer at a time: the rest wait up to 20 ms and then drop their line
+ * rather than stall a game thread on flash. */
 static volatile int s_logLock;
 static void helperLog(const char *msg)
 {
@@ -158,7 +150,8 @@ typedef struct HelperConfig {
 
 /* Opt-in latency tweak, read from state.txt at launch (see readGameConfig) */
 static int s_lowLatency = 0;
-static int s_lowLatencyApplied = 0;   /* the GXM queue really is 1 deep */
+static int s_lowLatencyApplied = 0;   /* the GXM queue is 1 deep because of us */
+static int s_lowLatencyNative = 0;    /* the title asked for 1 itself */
 static int32_t s_savedAdvFlags = 0, s_savedSoftcap = 0;   /* kernel values before this title */
 static HelperConfig s_cfg;   /* state.txt, read once in module_start */
 
@@ -516,11 +509,13 @@ static void noteCtrlRead(void)
 	if (!last || !s_ae_period_ema)
 		return;
 	uint32_t phase = sceKernelGetProcessTimeLow() - last;
-	s_ctrl_calls++;
+	/* Two threads may read the pad at once; divide by the local count so a
+	 * concurrent reset of the shared one cannot make this a division by 0. */
+	uint32_t calls = ++s_ctrl_calls;
 	if (phase < s_ae_period_ema / 4)
 		s_ctrl_after++;
-	if (s_ctrl_calls >= FPSVITA_CTRL_WINDOW) {
-		s_ctrl_after_pct = s_ctrl_after * 100u / s_ctrl_calls;
+	if (calls >= FPSVITA_CTRL_WINDOW) {
+		s_ctrl_after_pct = s_ctrl_after * 100u / calls;
 		s_ctrl_calls = 0; s_ctrl_after = 0; s_ctrl_windows++;
 	}
 }
@@ -603,7 +598,10 @@ static int32_t noteCtrlSample(const SceCtrlData *pad, int n)
  * race every frame: PCSE00352 read 16.2 ms old samples). Re-poll for up to
  * 2.5 ms and hand the game the new one: a frame of input latency for a
  * sub-millisecond spin (measured 0.2 to 0.5 ms, no timeouts). Self-gating by
- * age, so it needs no poll-phase gate and fires at most once per sample. */
+ * age, so it needs no poll-phase gate and fires at most once per sample.
+ * On the Read variants the continuation blocks until that next sample
+ * instead of spinning, so the 2.5 ms check only runs after it returns; the
+ * same age gate keeps that wait to the ~2 ms the sample is away. */
 static int freshPoll(tai_hook_ref_t ref, int port, SceCtrlData *pad, int count, int r, int32_t age)
 {
 	if (!(s_jitEnabled) || r <= 0 || age < (int32_t)FPSVITA_FRESH_DUE_US || age > 40000)
@@ -843,6 +841,7 @@ static void pushStats(uint32_t now, const FpsvitaState *stIn)
 	st.softcap      = stIn->softcap;
 	st.flags        = (injectWanted(stIn) ? FPSVITA_STATF_INJECT : 0)
 	                | (s_lowLatencyApplied ? FPSVITA_STATF_LOWLATENCY : 0)
+	                | (s_lowLatencyNative ? FPSVITA_STATF_LOWLAT_NATIVE : 0)
 	                | ((stIn->adv_flags & FPSVITA_ADV_JIT) ? FPSVITA_STATF_JIT : 0)
 	                | (s_hookId[HOOK_GXM_ADD_ENTRY] >= 0 ? FPSVITA_STATF_ADDENTRY : 0)
 	                | (s_tearWanted && s_tearOk ? FPSVITA_STATF_TEAR : 0);
@@ -874,9 +873,11 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 		s_tearOk = 0;
 		ret = TAI_CONTINUE(int, s_hookRef[HOOK_SET_FRAMEBUF], pParam, sync);
 	}
+	/* The 64-bit stamps are written on another thread without atomicity: a
+	 * torn read shows up as a negative age, so both EMAs also reject those. */
 	if (s_out_stamp) {
 		int32_t a = clampAge((int64_t)(sceKernelGetProcessTimeWide() - s_out_stamp));
-		if (a < 500000) s_scan_ema += (a - s_scan_ema) >> 4;
+		if (a >= 0 && a < 500000) s_scan_ema += (a - s_scan_ema) >> 4;
 	}
 	{
 		int hit = 0;
@@ -899,7 +900,7 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 			emaStep(&s_flag_ema, lag);
 			if (stamp) {
 				int32_t a = clampAge((int64_t)(sceKernelGetProcessTimeWide() - stamp));
-				if (a < 500000) s_fscan_ema += (a - s_fscan_ema) >> 4;
+				if (a >= 0 && a < 500000) s_fscan_ema += (a - s_fscan_ema) >> 4;
 			}
 			hit = 1; break;
 		}
@@ -946,44 +947,15 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 	if (st.hud_mode != FPSVITA_HUD_OFF && now - s_stats_last_push >= FPSVITA_STATS_PUSH_US)
 		pushStats(now, &st);
 
-	/* Rate reports: one line per 3000 presents (every 100 s at 30 fps, 50 s
-	 * at 60), each measuring the preceding 600. The first lands at frame 900
-	 * so a short test run sees one. One flash write per line; the field
-	 * reference is in docs/HACKING.md. */
-	{
-		uint32_t ph = frames % 3000u;
-		if (ph == 300 || ph == 2400) {
-			g_rate_t0 = sceKernelGetProcessTimeLow();
-		} else if (ph == 900 || ph == 0) {
-			uint32_t dt = sceKernelGetProcessTimeLow() - g_rate_t0;
-			/* sceClibSnprintf does not terminate on truncation (garbage after
-			 * over-long lines, 2026-10-17): size the buffer for the full line
-			 * and force the terminator and newline anyway. */
-			char line[640];
-			int len = sceClibSnprintf(line, sizeof(line) - 2,
-				"helper: rate frames=%u flips/s=%u cur=%d inject=%d since_vblank=%u ae_period=%u work=%u work_max=%u ctrl_after_pct=%u jit=%d slack=%u applied=%u missed=%u present_lag=%u softcap=%d softcap_applied=%u ll=%d"
-				" ts=%d/%d/%d ts_n=%u rd_ph=%d ts_ph=%d fresh=%u/%u/%u out=%d scan=%d fscan=%d flag=%u tied=%u unmatched=%u hurt=%u miss=%u near=%u imm=%u/%u/0x%08x",
-				frames, dt ? (unsigned)((600ull * 1000000ull) / dt) : 0, (int)cur,
-				g_inject_active, frames - g_last_vblank_frame, s_ae_period_ema, s_work_ema,
-				s_work_prev_max > s_work_win_max ? s_work_prev_max : s_work_win_max,
-				s_ctrl_after_pct, s_jitEnabled, s_jit_slack, s_jit_applied, s_jit_missed, s_present_lag_ema, (int)s_softcap, s_softcap_applied,
-				s_lowLatencyApplied,
-				s_ts_min, s_ts_ema, s_ts_max, s_ts_n, s_rd_ph_ema, s_ts_ph_ema,
-				s_fresh_hit, s_fresh_miss, s_fresh_spin_ema, s_ts_out_ema, s_scan_ema,
-				s_fscan_ema, s_flag_ema, s_entry_tied, s_entry_unmatched, s_jit_hurt,
-				s_miss_dbl, s_miss_near, s_imm_calls, s_imm_err, s_imm_code);
-			if (len < 0 || len > (int)sizeof(line) - 3) len = (int)sizeof(line) - 3;
-			if (len == 0 || line[len - 1] != '\n') { line[len++] = '\n'; }
-			line[len] = '\0';
-			helperLog(line);
-			s_ts_n = 0;   /* min/max restart with the next sample */
-		}
-	}
 
 	if (cur <= 0) /* Off or Uncapped: no inject ever */
 		return ret;
 
-	if (s_hookId[HOOK_GXM_ADD_ENTRY] >= 0) /* inject runs after AddEntry instead */
+	/* While the submit thread is going through AddEntry, inject runs there.
+	 * Judged by activity, not by the hook existing: a title can import
+	 * AddEntry and still present a phase (FMV, a 2D menu) with direct
+	 * SetFrameBuf calls, and that phase needs the wait here. */
+	if (s_ae_last_in && now - s_ae_last_in < 500000)
 		return ret;
 
 	if (st.autodetect == FPSVITA_AUTODETECT_ON) {
@@ -1026,7 +998,7 @@ static int sceGxmInitialize_patched(const SceGxmInitializeParams *params)
 	 *
 	 * Never clamp to 0. Verified on hardware (2026-10-15): sceGxmInitialize
 	 * accepts 1, and lowlatency with jit held its cap on the titles tested;
-	 * the per-title fps cost shows in the rate line's work and flag fields.
+	 * the per-title fps cost shows in the overlay's FPS and QUEUE rows.
 	 */
 	{
 		char line[96];
@@ -1037,7 +1009,7 @@ static int sceGxmInitialize_patched(const SceGxmInitializeParams *params)
 	if (params)
 		s_cb_data_size = params->displayQueueCallbackDataSize;
 	if (params && params->displayQueueMaxPendingCount <= 1)
-		s_lowLatencyApplied = 1;   /* already as shallow as it gets */
+		s_lowLatencyNative = 1;   /* the title's own choice, nothing to clamp */
 	if (s_lowLatency && params && params->displayQueueMaxPendingCount > 1) {
 		SceGxmInitializeParams p = *params;
 		p.displayQueueMaxPendingCount = 1;
@@ -1160,9 +1132,9 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 }
 
 /*
- * config.txt holds the globals, state.txt one line per title. A state.txt
- * from before the split still carries globals; they count only while
- * config.txt does not exist. Two reads at game start, one shared buffer.
+ * config.txt holds the globals, state.txt one line per title; nothing is
+ * taken from state.txt but this title's line. Two reads at game start, one
+ * shared buffer.
  */
 static __attribute__((noinline)) void readGameConfig(const char *titleid,
                                                       HelperConfig *cfg)
@@ -1274,6 +1246,19 @@ static int installDisplayHooks(const char *modname)
 	return added;
 }
 
+/* Hooks that can pace or observe presentation (display waits, SetFrameBuf,
+ * GXM). Controller and touch hooks alone are instrumentation: a main module
+ * with its input in the executable and its renderer in a PRX loaded later
+ * must still get the loader hooks, and must not take the kernel state until
+ * the display imports are found. */
+static int pacingHooked(void)
+{
+	int i;
+	for (i = 0; i < HOOK_CTRL_FIRST; i++)
+		if (s_hookId[i] >= 0) return 1;
+	return 0;
+}
+
 static unsigned hookMask(void)
 {
 	unsigned mask = 0;
@@ -1298,11 +1283,12 @@ static void takeKernelOwnership(void)
 	{
 		/* Latency options for this title go to the kernel, where the quick
 		 * menu can change them live; the frame path reads them back. */
-		FpsvitaState st;
-		st.adv_flags = 0; st.softcap = 0;
-		fpsvitaGetState(&st);
-		s_savedAdvFlags = st.adv_flags;
-		s_savedSoftcap = st.softcap;
+		/* Restore target at module_stop: the globals from config.txt, like
+		 * the interval. Not the kernel's current values, which after a killed
+		 * title (no module_stop) are still that title's. */
+		s_savedAdvFlags = (s_cfg.lowlatency ? FPSVITA_ADV_LOWLAT : 0) | (s_cfg.jit ? FPSVITA_ADV_JIT : 0)
+		                | (s_cfg.tear ? FPSVITA_ADV_TEAR : 0);
+		s_savedSoftcap = s_cfg.softcap;
 		int jit = s_cfg.pg_jit >= 0 ? s_cfg.pg_jit : s_cfg.jit;
 		int tear = s_cfg.pg_tear >= 0 ? s_cfg.pg_tear : s_cfg.tear;
 		int32_t sc = s_cfg.pg_sc >= 0 ? s_cfg.pg_sc : s_cfg.softcap;
@@ -1339,10 +1325,12 @@ static void onModuleStarted(SceUID modid)
 	if (sceKernelGetModuleInfo(modid, &info) < 0)
 		return;
 	int added = installDisplayHooks(info.module_name);
-	sceClibSnprintf(line, sizeof(line), "helper: late module %s hooks+=%d mask=0x%04x\n",
-	                info.module_name, added, hookMask());
-	helperLog(line);
-	if (added > 0)
+	if (added > 0) {
+		sceClibSnprintf(line, sizeof(line), "helper: late module %s hooks+=%d mask=0x%04x\n",
+		                info.module_name, added, hookMask());
+		helperLog(line);
+	}
+	if (pacingHooked())
 		takeKernelOwnership();
 }
 
@@ -1421,19 +1409,19 @@ int module_start(SceSize argc, const void *args)
 	s_lowLatency = s_cfg.pg_ll >= 0 ? s_cfg.pg_ll : s_cfg.lowlatency;
 
 	int installed = installDisplayHooks(TAI_MAIN_MODULE);
-	int loaders = installed ? 0 : installLoaderHooks();
+	int pacing = pacingHooked();
+	int loaders = pacing ? 0 : installLoaderHooks();
 	sceClibSnprintf(line, sizeof(line),
 	                "helper: %s hooks=%d mask=0x%04x loaders=%d pergame=%d\n",
 	                s_titleid, installed, hookMask(), loaders, (int)s_pergame);
 	helperLog(line);
 
-	if (installed > 0) {
+	if (pacing)
 		takeKernelOwnership();
-		return SCE_KERNEL_START_SUCCESS;
-	}
-	/* No display imports in the main module and nothing to wait on
-	 * (e.g. NPXS10036, the screenshot service): leave the kernel alone. */
-	return loaders > 0 ? SCE_KERNEL_START_SUCCESS : SCE_KERNEL_START_NO_RESIDENT;
+	/* Stay resident while any hook or loader hook points into this module.
+	 * Nothing at all (e.g. NPXS10036, the screenshot service): leave. */
+	return (installed > 0 || loaders > 0) ? SCE_KERNEL_START_SUCCESS
+	                                      : SCE_KERNEL_START_NO_RESIDENT;
 }
 
 int module_stop(SceSize argc, const void *args)

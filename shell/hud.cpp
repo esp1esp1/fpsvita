@@ -43,6 +43,7 @@ static ui::Text   *s_mini[2];       /* Mini only */
 static ui::Text   *s_label[FPSVITA_HUD_ROWS];
 static ui::Text   *s_value[FPSVITA_HUD_ROWS];
 static bool s_registered = false;
+static bool s_openFailed = false;   /* RCO/shell mismatch: do not try again, do not leak pages */
 static bool s_visible = true;       /* a freshly opened template is visible */
 static uint32_t s_lastPoll = 0;
 static uint32_t s_lastSeq = 0;
@@ -67,6 +68,13 @@ bool Hud::Open()
 {
 	if (!g_fpsvitaPlugin)
 		return false;
+
+	/* One attempt. Pages cannot be closed (see hud.h), so a failure after
+	 * PageOpen must not be retried on the next click: each retry would leave
+	 * another page open. */
+	if (s_openFailed)
+		return false;
+	s_openFailed = true;
 
 	uint8_t param[FPSVITA_PAGEOPEN_PARAM_SIZE] __attribute__((aligned(8)));
 	pafPageOpenParamCtor(param);
@@ -110,6 +118,7 @@ bool Hud::Open()
 
 	/* Nothing to show until a game is running. */
 	SetVisible(false);
+	s_openFailed = false;
 	return true;
 }
 
@@ -255,7 +264,8 @@ void Hud::Refresh(const FpsvitaState &st)
 	int capfps = fpsvitaIntervalToFps(st.interval);
 	int nat = fpsvitaIntervalToFps(st.native_interval);
 	int reqLL = (st.adv_flags & FPSVITA_ADV_LOWLAT) != 0;
-	int onLL = (s.flags & FPSVITA_STATF_LOWLATENCY) != 0;
+	int onLL = (s.flags & FPSVITA_STATF_LOWLATENCY) != 0;      /* clamped by the helper */
+	int natLL = (s.flags & FPSVITA_STATF_LOWLAT_NATIVE) != 0;  /* the title's own setting */
 	int antilag = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
 	int reqTear = (st.adv_flags & FPSVITA_ADV_TEAR) != 0 && st.interval == FPSVITA_INTERVAL_UNCAPPED;
 	int onTear = (s.flags & FPSVITA_STATF_TEAR) != 0;
@@ -291,7 +301,9 @@ void Hud::Refresh(const FpsvitaState &st)
 		pos = 0;
 		if (s.flags & FPSVITA_STATF_INJECT)
 			pos = appendW(buf, pos, L"VSYNC  ");
-		if (reqLL && onLL)
+		if (natLL)
+			pos = appendW(buf, pos, L"LOW LAT (GAME)  ");
+		else if (reqLL && onLL)
 			pos = appendW(buf, pos, L"LOW LAT  ");
 		else if (reqLL)
 			pos = appendW(buf, pos, L"LOW LAT PENDING  ");
@@ -341,7 +353,11 @@ void Hud::Refresh(const FpsvitaState &st)
 	else
 		setRow(ROW_ANTILAG, L"ON / %u", (unsigned)s.jit_missed);
 
-	if (reqLL && onLL)
+	/* A title that runs a 1-deep queue by itself gets nothing from the
+	 * option; say so instead of implying the user turned it on or off. */
+	if (natLL)
+		setRow(ROW_LOWLAT, L"ON (GAME'S OWN)");
+	else if (reqLL && onLL)
 		setRow(ROW_LOWLAT, L"ON");
 	else if (reqLL)
 		setRow(ROW_LOWLAT, L"RESTART GAME");

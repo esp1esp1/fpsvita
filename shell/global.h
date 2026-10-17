@@ -8,7 +8,7 @@ extern paf::Plugin *g_fpsvitaPlugin;
 extern paf::ui::ScrollView *g_imposeRoot;
 
 /*
- * The player's global interval, as opposed to whatever a running game's
+ * The user's global interval, as opposed to whatever a running game's
  * per-game override has temporarily put in the kernel. Seeded from state.txt
  * at boot and updated when the player changes the mode with no game running.
  */

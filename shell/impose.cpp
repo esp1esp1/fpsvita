@@ -189,8 +189,8 @@ void Impose::PersistState()
 	writeConfigFile(g_globalInterval, currentInject, autodetect);
 }
 
-/* state.txt: this title's line replaced or appended, every other title's
- * line kept verbatim, config keys and legacy junk dropped. */
+/* state.txt: this title's line replaced or appended, every other line kept
+ * verbatim (including ones this version does not understand). */
 void Impose::SavePerGame()
 {
 	if (!hasGame)
@@ -256,12 +256,17 @@ void Impose::SavePerGame()
 /*
  * Boot-time read of the globals from config.txt. Returns false when the file
  * is missing (fresh install) so the caller writes one with the defaults.
- * Missing keys keep their defaults.
+ * Missing keys keep their defaults. A file too large to read whole is left
+ * alone (defaults apply, nothing is written over it), like state.txt.
  */
 bool readGlobals(int32_t *interval, int32_t *inject, int32_t *autodetect,
                  int32_t *hud, int32_t *hudpos)
 {
 	int bytes = readWhole(FPSVITA_CONFIG_FILE);
+	if (bytes == -2) {
+		DBG("config.txt larger than the read buffer - not read, not rewritten");
+		return true;
+	}
 	if (bytes < 0)
 		return false;
 
@@ -347,17 +352,16 @@ void Impose::UpdateInjectState()
 	widgetShow(injectBox);
 	widgetShow(injectLabel);
 
+	/* Inject is a global; the helper ignores it at Default and Uncapped
+	 * (injectWanted). Only grey the box out here. Clearing the value too,
+	 * as this once did, wiped the user's forced vsync whenever the menu
+	 * opened on a title whose profile is Default, and the next HUD click
+	 * persisted that as vsync=0. */
 	if (currentInterval == FPSVITA_INTERVAL_OFF ||
-	    currentInterval == FPSVITA_INTERVAL_UNCAPPED) {
+	    currentInterval == FPSVITA_INTERVAL_UNCAPPED)
 		injectBox->Disable(true);
-		if (currentInject == FPSVITA_INJECT_ON) {
-			injectBox->SetCheck(false);
-			currentInject = FPSVITA_INJECT_OFF;
-			fpsvitaSetInject(FPSVITA_INJECT_OFF);
-		}
-	} else {
+	else
 		injectBox->Enable(true);
-	}
 }
 
 /* ------------------------------------------------------------------
@@ -394,23 +398,26 @@ void Impose::CycleMode(int32_t dir)
 	bool tear = idx == FPSVITA_UI_CYCLE_LEN - 1;
 	obj->currentInterval = tear ? FPSVITA_INTERVAL_UNCAPPED : fpsvita_cycle[idx];
 	fpsvitaSetInterval(obj->currentInterval);
-	int32_t flags = tear ? (obj->advFlags | FPSVITA_ADV_TEAR) : (obj->advFlags & ~FPSVITA_ADV_TEAR);
-	if (flags != obj->advFlags) {
-		obj->advFlags = flags;
-		obj->ApplyAdvanced();   /* live, and persisted with the globals when no game runs */
-	}
 
 	/*
 	 * With a game running this is that game's active interval; the player
 	 * commits it with Save, which writes a per-game override.
 	 *
-	 * With no game running there is nothing to override — the value on screen
+	 * With no game running there is nothing to override: the value on screen
 	 * IS the global setting, so track and persist it. Otherwise the change is
 	 * silently discarded the moment a game launches, because the helper
-	 * snapshots the kernel interval and restores it on exit.
+	 * sets the interval from config.txt at start.
 	 */
-	if (!obj->hasGame) {
+	if (!obj->hasGame)
 		g_globalInterval = obj->currentInterval;
+
+	/* One config.txt write per press: ApplyAdvanced persists (with the
+	 * interval above) when the tearing flag changed, PersistState otherwise. */
+	int32_t flags = tear ? (obj->advFlags | FPSVITA_ADV_TEAR) : (obj->advFlags & ~FPSVITA_ADV_TEAR);
+	if (flags != obj->advFlags) {
+		obj->advFlags = flags;
+		obj->ApplyAdvanced();   /* live, and persisted with the globals when no game runs */
+	} else if (!obj->hasGame) {
 		obj->PersistState();
 	}
 
@@ -526,10 +533,10 @@ void Impose::SaveCBFun(int32_t type, ui::Handler *self,
 	Impose *obj = (Impose *)userdata;
 
 	if (obj->hasGame) {
-		/* Save per-game override (also writes global state) */
+		/* This title's line in state.txt; the globals are untouched. */
 		obj->SavePerGame();
 	} else {
-		/* No game running — save global state only */
+		/* No game running: the globals are what is on screen. */
 		obj->PersistState();
 	}
 }

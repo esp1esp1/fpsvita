@@ -68,7 +68,7 @@ Input to screen, same content, Antilag off and on. Frame rates were unchanged in
 | Galaxy on Fire 2 (own rate) | 21 ms | 16 ms | fresh poll, two reads a frame |
 | Doom64EX (own rate), intro | 34 ms | 27 ms | fresh poll |
 | Road Rage 2 (30) | 32 ms | 32 ms | nothing: the game reads mid-frame, no sample is about to land |
-| Grim Fandango Remastered (30) | | | nothing, same reason |
+| Grim Fandango Remastered (30) | | | no clean pair: the two runs did not cover the same content |
 
 An earlier version of Antilag slept for most of the frame's spare time instead. At a 60 fps limit
 that moved the read *away* from the moment the new sample lands and made input older; that is

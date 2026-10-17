@@ -53,8 +53,9 @@ something else is already pacing, for example VitaGrafix's frame-rate patches.
 **Save** writes the whole row set for the running title into the state file as its profile;
 the helper applies it at every later launch, and restores the globals when the game exits.
 
-A capped wait is issued through the helper's own copy of the wait function. That detail is why
-the cap holds on titles where Framecapper's approach did not.
+A capped wait is issued through the helper's own copy of the wait function rather than by
+changing the count on the game's own call. On one homebrew port (Doom64EX) the latter returned
+at once and removed all pacing; the former holds.
 
 ## 3. The latency options
 
@@ -62,8 +63,10 @@ These live on the quick menu's Latency row and in `ur0:data/fpsvita/config.txt` 
 on the title's line in `state.txt`. With a game running, a change applies to that title and is
 kept by **Save**; with no game running it sets the global default. Anti-lag and the Limiter act
 on the next frame. Lowlat is applied once when the game initialises graphics, so a change made
-mid-game waits for the next launch, and the overlay says so: `LOW LAT PENDING` after turning
-it on, `LOW LAT UNTIL RESTART` after turning it off.
+mid-game waits for the next launch, and the overlay says so: `LOW LAT PENDING` (Full:
+`RESTART GAME`) after turning it on, `LOW LAT UNTIL RESTART` after turning it off. A game that
+already runs a one-deep queue by itself shows `LOW LAT (GAME)`; the option changes nothing
+there.
 
 ### Lowlat (`lowlat=1`): one frame less in the display queue
 
@@ -72,8 +75,8 @@ samples and most games allow two in flight. That second slot is a full frame of 
 (16.7 ms at 60, 33 ms under a 30 limit) bought purely as tolerance for a slow frame. fpsvita
 sets the queue depth to one when the game initialises graphics.
 
-- **Gain:** up to one frame, on titles that actually keep the second slot full. On the titles
-  measured so far (MGS2 HD, The Wolf Among Us) the `INPUT` number barely moved.
+- **Gain:** up to one frame, on titles that actually keep the second slot full. Dead or Alive 5
+  Plus at 60 gained 18 ms; on MGS2 HD and The Wolf Among Us the `INPUT` number barely moved.
 - **Cost:** a frame that takes longer than usual now stalls the game instead of being absorbed
   by the queue, so a title that was just holding its rate may start dropping frames.
 - **Not every title can take it.** Some homebrew ports initialise graphics in a way the helper
@@ -94,7 +97,7 @@ on input a whole frame old. Anti-lag does two things:
   display queue for a vblank or more, the helper holds the submitting thread that long first, so
   the poll lands on a later sample. It measures the queue time itself and only sleeps time that
   was idle anyway; if flips start landing later it backs off for 60 frames and relearns. On
-  MGS2 HD at 30 this is worth another 17 to 25 ms. At a 60 limit it never sleeps.
+  MGS2 HD at 30 the two together cut 17 to 24 ms. At a 60 limit it never sleeps.
 
 - **Self-retreating:** a frame that misses its deadline while the sleep is on gates it for 60
   frames and restarts the warm-up. A game that cannot hold its limit gets no sleep at all.
@@ -159,7 +162,7 @@ VSYNC  LOW LAT  ANTI-LAG 16.7 ms    LIMIT:          30 / GAME 60
 | `INPUT` | The number that matters: from the newest controller sample the game had when it submitted a frame to that frame's flip. Everything but the panel's own response. Anti-lag should lower it; compare with and without. |
 | `QUEUE` | The same frame's submit-to-flip. Around one period means the display queue is holding a frame; that is the time anti-lag's sleep can reclaim and what Lowlat is meant to cut. |
 | `ANTI-LAG` | `OFF`; `ON / 2` when the fresh poll is working and no sleep is in force; `16.7 ms / 2` when the whole-vblank sleep is on. The count is frames that ran over budget while the sleep was on; each one gates it for 60 frames, so a climbing count means the game cannot afford it. |
-| `LOW LAT` | ON: the display queue was clamped to one frame at startup. `RESTART GAME`: requested, applies at the next launch. |
+| `LOW LAT` | `ON`: the display queue was clamped to one frame at startup. `RESTART GAME`: requested, applies at the next launch. `ON UNTIL RESTART`: turned off, still clamped until the next launch. `ON (GAME'S OWN)`: the title runs a one-deep queue by itself. |
 | `LIMITER` | Uncapped with a time-based limit active; `(NEEDS UNCAPPED)` when set under a vsync limit. |
 | `TITLE` | The title id the numbers belong to. |
 
@@ -173,7 +176,8 @@ scene change, and the whole overlay hides itself when no game is running.
 - **Limit shows but fps reads far above it.** The title never waits and vsync has not engaged
   (fewer than 30 presents without a wait, or the game is not actually faster than the limit).
   Give it a few seconds; if it persists the title needs vsync forced: `vsync=1` in
-  `config.txt`, or `vsync=0` to show the checkbox and tick it per game.
+  `config.txt`, or `vsync=0` to show the checkbox and tick it when needed. Forced vsync is a
+  global setting; it is not stored in a title's profile.
 - **Stutter after turning on anti-lag.** The game's frame time is spiky. The sleep should
   retreat on its own; if the stutter stays, the spikes are shorter than the retreat window.
   Turn anti-lag off for that title.
@@ -189,8 +193,9 @@ scene change, and the whole overlay hides itself when no game is running.
 ## 6. The files
 
 Both live in `ur0:data/fpsvita/`, are written by the quick menu and read by the helper when a
-game starts. Hand edits take effect at the next launch (or the next quick-menu open for the
-globals).
+game starts. A hand edit to `state.txt` takes effect at that title's next launch. The quick
+menu reads `config.txt` once at boot and rewrites the whole file on every change, so a hand
+edit there needs a reboot, or the next menu change writes over it.
 
 `config.txt`, the global defaults, regenerated whole on every change:
 

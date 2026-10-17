@@ -63,6 +63,7 @@ int kuKernelRegisterExceptionHandler(SceUInt32 exceptionType,
                                      KuKernelExceptionHandler pHandler,
                                      KuKernelExceptionHandler *pOldHandler,
                                      void *pOpt);
+void kuKernelReleaseExceptionHandler(SceUInt32 exceptionType);
 }
 
 using namespace paf;
@@ -434,6 +435,7 @@ static SceInt32 sceAVConfigRegisterCallback_patched(SceUID cbid, SceInt32 a2)
 extern "C" int __module_start(SceSize args, const void *argp);
 
 static KuKernelExceptionHandler s_prevExcHandler[3];
+static bool s_excRegistered[3];
 
 /* Static so the exception handler keeps its stack use small. */
 static SceUID s_modList[256];
@@ -497,8 +499,21 @@ static void installCrashHandler()
 	for (uint32_t t = 0; t < 3; t++) {
 		int r = kuKernelRegisterExceptionHandler(t, crashHandler,
 		                                         &s_prevExcHandler[t], NULL);
+		s_excRegistered[t] = r >= 0;
 		if (r < 0)
 			dbg_hex("kuKernelRegisterExceptionHandler failed", (uint32_t)r);
+	}
+}
+
+/* module_stop: a handler left behind would be the one thing still pointing
+ * into this module, so the next SceShell fault would land in freed code. */
+static void releaseCrashHandler()
+{
+	for (uint32_t t = 0; t < 3; t++) {
+		if (s_excRegistered[t]) {
+			kuKernelReleaseExceptionHandler(t);
+			s_excRegistered[t] = false;
+		}
 	}
 }
 
@@ -572,6 +587,7 @@ int __module_stop(SceSize args, const void *argp)
 	s_imposeOpened = false;
 	common::MainThreadCallList::Unregister(hudBootTask, NULL);
 	fpsvita::Hud::Shutdown();
+	releaseCrashHandler();
 
 	return SCE_KERNEL_STOP_SUCCESS;
 }

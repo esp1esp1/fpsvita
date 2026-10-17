@@ -139,6 +139,7 @@ static const int32_t fpsvita_softcap_cycle[] = {0, 20, 24, 25, 30, 40, 45, 50, 6
 #define FPSVITA_STATF_JIT        (1u << 2)  /* jit requested for this title */
 #define FPSVITA_STATF_ADDENTRY   (1u << 3)  /* AddEntry hooked: work/queue/input are valid */
 #define FPSVITA_STATF_TEAR       (1u << 4)  /* tearing flips are going through the kernel */
+#define FPSVITA_STATF_LOWLAT_NATIVE (1u << 5) /* the title itself asked for a 1-deep queue */
 
 typedef struct FpsvitaStats {
 	uint32_t fps_x10;       /* presents per second, times 10 */

@@ -44,8 +44,9 @@ Three plugins communicate through a kernel module acting as shared state:
 ```
 fpsvita-kernel.skprx  (*KERNEL)
   volatile int32_t: interval, inject, autodetect, native_interval
-  volatile uint32_t[3]: titleid (packed as 3 × u32)
-  Exports FpsvitaForUser library — syscall-accessible getters/setters
+  volatile uint32_t[3]: titleid (packed as 3 x u32)
+  Exports FpsvitaForUser library: syscall-accessible getters/setters. The stats push and
+  the Tearing flip are accepted only from the process that wrote the title id.
 
 fpsvita-ui.suprx  (*main / SceShell)
   shell/hud.cpp: overlay page (fc_page_hud) over the game, PSVshellPlus-style; fed by
@@ -60,8 +61,9 @@ fpsvita-ui.suprx  (*main / SceShell)
 
 fpsvita-helper.suprx  (*ALL / every game process)
   On start: detect titleid (sceAppMgrAppParamGetString param 12), install hooks in the
-  main module; if it imports nothing, hook the module loaders and retry on each late module.
-  Title id, native reset and per-game override go to the kernel when the first hook lands.
+  main module; if it imports no display or GXM function, hook the module loaders and retry
+  on each late module. Title id, native reset and per-game override go to the kernel when
+  the first display or GXM hook lands (controller hooks alone do not count).
   Hooks by NID with TAI_ANY_LIBRARY (bit i of the logged hook mask = entry i):
     0-3   sceDisplayWaitVblankStart(Multi)(CB)      0xDD0A13B8 0x5795E898 0x05F27764 0x78B41B92
     4-7   sceDisplayWaitSetFrameBuf(Multi)(CB)      0x7D9864A8 0x9423560C 0x3E796EF5 0x814C90AF
@@ -72,13 +74,9 @@ fpsvita-helper.suprx  (*ALL / every game process)
     15-22 sceCtrl(Peek|Read)Buffer(PositiveExt|PositiveExt2|Negative|Negative2)
                                                    same; Ext2 is what vitaGL ports use
     23-24 sceTouch(Peek|Read)                       phase marker only when no ctrl hook landed
-  No threads, no polling — reads kernel state on every hook invocation.
-  The rate line's `ts=min/ema/max` is the newest returned controller sample's age against
-  the process clock (same epoch as the stamp); `miss=` present periods near twice the cap,
-  `near=` CPU work over the cap budget by at most 2 ms, `scan=` age of the newest delivered
-  sample at the next flip, `fscan=`/`flag=` the same per frame (sample and submit time recorded
-  at AddEntry, aged at the flip of that buffer; `unmatched=` flips with no such entry),
-  `imm=calls/errors/first error code`.
+  No threads, no polling: reads kernel state on every hook invocation.
+  Forced vsync (inject) waits after sceGxmDisplayQueueAddEntry on the submit thread while
+  that hook is active, else inside SetFrameBuf.
 ```
 
 ### Interval values (`common/fpsvita_common.h`)
@@ -118,11 +116,19 @@ both.
 
 ### Auto-detect inject
 
-The helper tracks `g_frame_count` (incremented in `SetFrameBuf`) and `g_last_vblank_frame` (set in vblank hooks). If `g_frame_count - g_last_vblank_frame > FPSVITA_AUTODETECT_THRESHOLD` (30 frames), inject engages automatically. This detects games that don't call vblank waits.
+The helper tracks `g_frame_count` (incremented in `SetFrameBuf`) and `g_last_vblank_frame`
+(set in the vblank-wait hooks). `autodetectTick` engages inject when the gap exceeds
+`FPSVITA_AUTODETECT_ENGAGE` (30 presents) **and** the measured present period is at least
+`FPSVITA_AUTODETECT_RATE_MARGIN_PCT` shorter than the cap's, and releases it only after
+`FPSVITA_AUTODETECT_RELEASE_STREAK` (60) consecutive presents within
+`FPSVITA_AUTODETECT_RELEASE` (2) of a wait. The comment above the constants in
+`common/fpsvita_common.h` explains why a plain engage/release pair oscillates;
+`tests/autodetect.cpp` exercises the state machine.
 
 ### config.txt ordering
 
-`fpsvita-ui.suprx` must appear **before** `PSVshellPlus.suprx` in `*main` so the FPS control appears above PSVshellPlus in the menu (taiHEN LIFO hook ordering).
+Put `fpsvita-ui.suprx` **before** `PSVshellPlus_Shell.suprx` in `*main` for the fpsvita rows
+to appear above PSVshellPlus's (taiHEN LIFO hook ordering); after it puts them below.
 
 
 ## Key Implementation Notes
@@ -146,7 +152,7 @@ The helper tracks `g_frame_count` (incremented in `SetFrameBuf`) and `g_last_vbl
   offset). Track the state yourself and flip it on each decide; `SetCheck()` is a real export.
 - **lowlatency only applies where `sceGxmInitialize` goes through the hooked import** after
   the helper starts; some homebrew (DOOM64EX1) initialises GXM another way and the overlay
-  keeps reporting `lowlat pending`.
+  keeps reporting `LOW LAT PENDING` (`RESTART GAME` in Full).
 - Show/hide a widget with `widgetShow`/`widgetHide` (PlayAnimation), not `Show()`/`Hide()`.
 - **Helper vblank hooks wait through the helper's own SceDisplay imports** when capping, never
   via `TAI_CONTINUE` with a changed count: on DOOM64EX1 that continuation returned
@@ -158,30 +164,20 @@ The helper tracks `g_frame_count` (incremented in `SetFrameBuf`) and `g_last_vbl
 - **Shell plugin is C++** (required for ScePaf widget API). Companion and kernel are C.
 - `SYSCALL_ENTER`/`SYSCALL_EXIT` macros (ARM CP15 TPIDRURO manipulation) wrap the kernel exports, as in other plugins. They are not what mangles return values (tested).
 - Widget child lookup uses `IDParam("string_id")` which hashes the string via ScePaf's internal hash. Hardcoded numeric hashes (e.g. `0x0EE0C8AF`) are for impose_plugin widgets borrowed from PSVshellPlus.
-- Native interval (`nativeInterval`) is captured from the game's first vblank call and displayed as `"30fps (n:60)"` in the mode label.
+- Native interval (`nativeInterval`) is captured from the game's first vblank call and displayed as `"30fps (game 60)"` in the mode label; a sustained change (16 identical requests) updates it.
 - Save button visibility: hidden when no game is running (titleid empty), shown otherwise.
 - `fpsvita-ui.suprx` returns `SCE_KERNEL_START_NO_RESIDENT` (bails cleanly) if the RCO file or kernel module is missing.
 
 ## The helper log
 
-`ur0:data/fpsvita/helper.log` gets one line per game process the helper starts in
-(`helper: <TITLEID> hooks=.. mask=.. loaders=.. pergame=..`, the mask bits as in the hook
-table above) and a `helper: rate` line every 3000 presents (the first at 900). Rate line
-fields, all times in microseconds and most of them EMAs:
+`ur0:data/fpsvita/helper.log` gets a few lines per game process the helper starts in, all at
+startup: `helper: <TITLEID> hooks=.. mask=.. loaders=.. pergame=..` (the mask bits as in the
+hook table above), one `helper: late module ..` line per late module that added a hook, and
+`helper: gxm init pending=<queue depth> lowlat=<0|1>` when the title initialises graphics
+through the hooked import. There is no periodic logging: the helper never writes to flash from
+a game thread once the title is running. The per-frame numbers go to the overlay through the
+kernel instead.
 
-| Field | Meaning |
-|---|---|
-| `frames`, `flips/s` | presents so far; presents per second over the last 600 |
-| `cur`, `inject`, `since_vblank` | limit in force, forced vsync engaged, presents since the last display wait |
-| `ae_period`, `work`, `work_max` | submit-to-submit period; CPU work per frame (submit return to next call); worst recent |
-| `ctrl_after_pct` | share of controller reads in the first quarter of the frame after the submit returns |
-| `jit`, `slack`, `applied`, `missed`, `hurt` | antilag on; whole-vblank sleep in force; sleeps applied; frames over budget while sleeping; backoffs because flips got later |
-| `present_lag`, `softcap`, `softcap_applied`, `ll` | submit call to next flip; limiter fps and holds; lowlat applied |
-| `ts=min/ema/max`, `ts_n` | age of the newest controller sample at the read; reads in the window |
-| `rd_ph`, `ts_ph` | read time and sample stamp relative to the last capped wait return |
-| `fresh=hits/timeouts/spin`, `out` | fresh-poll re-polls; age of the sample the game got |
-| `scan`, `fscan`, `flag`, `tied`, `unmatched` | input age at the next flip; the frame's own input-to-flip and submit-to-flip; flips tied by framebuffer address; flips with no entry |
-| `miss`, `near` | present periods near twice the limit; CPU work over budget by 2 ms or less |
-| `imm=calls/errors/code` | Tearing flips through the kernel, failures, first error code |
-
-A line is written with the log held under a lock; lines from two threads never interleave.
+The shell's `ur0:data/fpsvita/boot.log` gets a handful of lines per boot, one
+`Impose: game=.. interval=.. native=..` line per quick-menu open, and the crash handler's
+register dump if SceShell faults.

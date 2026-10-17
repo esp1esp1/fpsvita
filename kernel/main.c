@@ -144,20 +144,27 @@ void fpsvitaSetHud(int32_t mode, int32_t pos)
 }
 
 /*
- * Tearing mode: the user-mode sceDisplaySetFrameBuf refuses
- * SCE_DISPLAY_SETBUF_IMMEDIATE (0x80290006 on every title tested); the
- * kernel entry point accepts it from the caller's process context and the
- * driver applies it at once. The 0x24-byte SceDisplayFrameBuf is copied in
- * from user memory.
- * Return values lose bit 30 on the way back (see fpsvitaGetState), so the
- * helper logs the raw value and only tests the sign.
+ * Tearing mode (and helper exp.txt bit 8): the user-mode sceDisplaySetFrameBuf
+ * refuses SCE_DISPLAY_SETBUF_IMMEDIATE (0x80290006 on every title tested,
+ * 2026-10-17); this takes the kernel entry point from the caller's process
+ * context. The SceDisplayFrameBuf (sizeof, 0x18 bytes) is copied in from user
+ * memory. Only the process that owns the title id may flip: this is a
+ * kernel-privilege display write, not something every user process should
+ * reach. Return values lose bit 30 on the way back (see fpsvitaGetState), so
+ * the helper only tests the sign.
  */
+static int callerIsOwner(void)
+{
+	return g_owner_pid >= 0 && ksceKernelGetProcessId() == g_owner_pid;
+}
+
 int fpsvitaSetFrameBufImmediate(const void *user_fb)
 {
 	SceDisplayFrameBuf fb;
 	int ret;
 	SYSCALL_ENTER
-	if (ksceKernelCopyFromUser(&fb, user_fb, sizeof(fb)) == 0 && fb.size == sizeof(fb))
+	if (callerIsOwner()
+	    && ksceKernelCopyFromUser(&fb, user_fb, sizeof(fb)) == 0 && fb.size == sizeof(fb))
 		ret = ksceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_IMMEDIATE);
 	else
 		ret = -1;
@@ -177,7 +184,8 @@ void fpsvitaSetStats(const FpsvitaStats *in)
 {
 	FpsvitaStats s;
 	SYSCALL_ENTER
-	if (ksceKernelCopyFromUser(&s, in, sizeof(s)) == 0)
+	/* Only the running title's helper pushes numbers; the shell reads them. */
+	if (callerIsOwner() && ksceKernelCopyFromUser(&s, in, sizeof(s)) == 0)
 		g_stats = s;
 	SYSCALL_EXIT
 }
