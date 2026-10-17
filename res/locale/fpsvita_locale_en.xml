@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<stringset>
+  <string src="FPS:" id="fc_msg_fps" />
+  <string src="&lt;" id="fc_msg_left" />
+  <string src="&gt;" id="fc_msg_right" />
+  <string src="Vsync" id="fc_msg_inject" />
+  <string src="Save" id="fc_msg_save" />
+  <string src="HUD:" id="fc_msg_hud" />
+  <string src="Latency" id="fc_msg_adv" />
+  <string src="Lowlat" id="fc_msg_lowlat" />
+  <string src="Antilag" id="fc_msg_jit" />
+  <string src="Limiter" id="fc_msg_softcap" />
+</stringset>

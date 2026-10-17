@@ -1,0 +1,15 @@
+build/
+acdc-tool/
+res/RES_RCO_TMP/
+res/*.rco
+sweep/shots/
+sweep/*.bak*
+*.log
+.headroom/
+.claude/settings.local.json
+# device backups: keep the text, not the binaries
+.device-backup/**/*.suprx
+.device-backup/**/*.skprx
+.device-backup/**/*.rco
+__pycache__/
+build-dev/

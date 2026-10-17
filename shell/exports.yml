@@ -1,0 +1,8 @@
+fpsvita-ui:
+  attributes: 0
+  version:
+    major: 1
+    minor: 0
+  main:
+    start: __module_start
+    stop: __module_stop

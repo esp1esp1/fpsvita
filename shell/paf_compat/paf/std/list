@@ -1,0 +1,6 @@
+/* paf/std/list - override: use standard <list> */
+#ifndef _VDSUITE_USER_PAF_STD_LIST_H
+#define _VDSUITE_USER_PAF_STD_LIST_H
+#include <list>
+#include <paf/std/std_bridge>
+#endif

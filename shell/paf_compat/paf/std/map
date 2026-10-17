@@ -1,0 +1,9 @@
+/* paf/std/map - override: use standard <map> */
+#ifndef _VDSUITE_USER_PAF_STD_MAP_H
+#define _VDSUITE_USER_PAF_STD_MAP_H
+#ifndef _MAP_
+#define _MAP_
+#include <map>
+#include <paf/std/std_bridge>
+#endif
+#endif

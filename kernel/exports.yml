@@ -1,0 +1,22 @@
+fpsvita-kernel:
+  attributes: 0
+  version:
+    major: 1
+    minor: 0
+  main:
+    start: __module_start
+    stop: __module_stop
+  libraries:
+    FpsvitaForUser:
+      syscall: true
+      functions:
+        - fpsvitaGetState
+        - fpsvitaSetInterval
+        - fpsvitaSetInject
+        - fpsvitaSetAutodetect
+        - fpsvitaSetNativeInterval
+        - fpsvitaSetTitleIdPart
+        - fpsvitaSetHud
+        - fpsvitaSetAdvanced
+        - fpsvitaSetStats
+        - fpsvitaSetFrameBufImmediate

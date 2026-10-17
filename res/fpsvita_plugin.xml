@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resource version="0.1" type="normal" id="fpsvita_plugin">
+  <pagetable>
+    <page id="fc_page_hud">
+    </page>
+  </pagetable>
+
+  <styletable>
+    <style_text textobj="textobj1" id="fc_style_text_impose">
+      <textobj font_size="24" bold="1" align_y="0" align_x="0"
+               text_align="0" color="1, 1, 1, 1" id="textobj1" />
+    </style_text>
+    <style_text textobj="textobj1" id="fc_style_text_hud">
+      <textobj font_size="19" max_line_count="1" font_color="1, 1, 1, 1" id="textobj1" />
+    </style_text>
+    <style_text textobj="textobj1" id="fc_style_text_hud_green">
+      <textobj font_size="19" max_line_count="1" font_color="0, 1, 0, 1" id="textobj1" />
+    </style_text>
+  </styletable>
+
+  <templatetable>
+    <!--
+      Overlay, opened once into fc_page_hud (shell/hud.cpp). The root plane is
+      moved for the four positions and faded as a whole. Mini shows the two
+      green lines; Full shows the box with its label/value rows. Layout and
+      style follow PSVshellPlus's HUD: 26 px per row, uppercase labels.
+    -->
+    <template id="fc_template_hud">
+      <plane style="_common_style_plane_transparent" id="fc_plane_hud_root">
+        <layout_hint size="350, 250" pos="10, -10" anchor="1, 2" align="1, 2" />
+        <!-- Full: PSVshellPlus-style dialog box, labels left, values right -->
+        <plane style="_common_style_plane_transparent" id="fc_plane_hud_box">
+          <layout_hint size="350, 250" pos="0, 0" anchor="1, 2" align="1, 2" />
+          <plane id="fc_plane_hud_frame" texture="_common_texture_dialog_frame">
+            <layout_hint adjust="1, 1" />
+          </plane>
+          <plane style="_common_style_plane_dialog" id="fc_plane_hud_fill" texture="_common_texture_dialog_fill_white">
+            <layout_hint adjust="1, 1" />
+          </plane>
+        <text style="fc_style_text_hud" id="fc_text_hud_l0">
+          <layout_hint pos="10, -8" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_v0">
+          <layout_hint pos="-10, -8" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_l1">
+          <layout_hint pos="10, -34" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_v1">
+          <layout_hint pos="-10, -34" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_l2">
+          <layout_hint pos="10, -60" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_v2">
+          <layout_hint pos="-10, -60" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_l3">
+          <layout_hint pos="10, -86" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_v3">
+          <layout_hint pos="-10, -86" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_l4">
+          <layout_hint pos="10, -112" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_v4">
+          <layout_hint pos="-10, -112" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_l5">
+          <layout_hint pos="10, -138" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_v5">
+          <layout_hint pos="-10, -138" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_l6">
+          <layout_hint pos="10, -164" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_v6">
+          <layout_hint pos="-10, -164" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_l7">
+          <layout_hint pos="10, -190" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_v7">
+          <layout_hint pos="-10, -190" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_l8">
+          <layout_hint pos="10, -216" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud" id="fc_text_hud_v8">
+          <layout_hint pos="-10, -216" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        </plane>
+        <!-- Mini: two green lines, no box, like PSVshellPlus's micro view -->
+        <text style="fc_style_text_hud_green" id="fc_text_hud_mini0">
+          <layout_hint pos="10, -8" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud_green" id="fc_text_hud_mini1">
+          <layout_hint pos="10, -34" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+      </plane>
+    </template>
+
+    <!--
+      Single-row framecap control:
+        FPS: [<] 30fps [>]           Inj [checkbox]
+
+      Layout positions mirror PSVshellPlus's OC rows exactly for the
+      left section (label, down, value, up). The inject label and
+      checkbox occupy the right side where PSVshellPlus puts its
+      lock checkboxes.
+    -->
+    <template id="fc_template_impose">
+      <group id="fc_group_impose_mode">
+        <layout_hint size="728, 70, 0" />
+
+        <!-- "FPS:" label -->
+        <text style="fc_style_text_impose" id="fc_text_impose_label"
+              label="fc_msg_fps">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="44, 0" />
+        </text>
+
+        <!-- Left arrow button -->
+        <button style="_common_default_style_button" id="fc_button_mode_down"
+                label="fc_msg_left">
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="130, 0" />
+        </button>
+
+        <!-- Current mode value (set programmatically) -->
+        <text style="fc_style_text_impose" id="fc_text_mode_value">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="198, 0" />
+        </text>
+
+        <!-- Right arrow button; room for "Uncapped (game 60)" before it -->
+        <button style="_common_default_style_button" id="fc_button_mode_up"
+                label="fc_msg_right">
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="440, 0" />
+        </button>
+
+        <!-- "Vsync" label near the checkbox (hidden when autodetect on) -->
+        <text style="fc_style_text_impose" id="fc_text_inject_label"
+              label="fc_msg_inject">
+          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="145, 0" />
+        </text>
+
+        <!-- Inject toggle checkbox (hidden when autodetect on) -->
+        <check_box id="fc_check_inject">
+          <layout_hint align="2, 0" size="46, 46" anchor="2, 4" pos="85, 0" />
+        </check_box>
+
+        <!-- Save per-game button (hidden when no game running) -->
+        <button style="_common_default_style_button" id="fc_button_save"
+                label="fc_msg_save">
+          <layout_hint align="2, 0" size="70, 46" anchor="2, 4" pos="7, 0" />
+        </button>
+
+      </group>
+
+      <!-- Second row: overlay mode and position, same column grid as above -->
+      <group id="fc_group_impose_hud">
+        <layout_hint size="728, 70, 0" />
+
+        <text style="fc_style_text_impose" id="fc_text_hud_label"
+              label="fc_msg_hud">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="44, 0" />
+        </text>
+        <button style="_common_default_style_button" id="fc_button_hud_down"
+                label="fc_msg_left">
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="130, 0" />
+        </button>
+        <text style="fc_style_text_impose" id="fc_text_hud_value">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="198, 0" />
+        </text>
+        <button style="_common_default_style_button" id="fc_button_hud_up"
+                label="fc_msg_right">
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="372, 0" />
+        </button>
+
+        <button style="_common_default_style_button" id="fc_button_hud_pos_down"
+                label="fc_msg_left">
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="430, 0" />
+        </button>
+        <text style="fc_style_text_impose" id="fc_text_hud_pos_value">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="498, 0" />
+        </text>
+        <button style="_common_default_style_button" id="fc_button_hud_pos_up"
+                label="fc_msg_right">
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="560, 0" />
+        </button>
+
+      </group>
+
+      <!-- Third row: the latency options (see docs/GUIDE.md) -->
+      <group id="fc_group_impose_adv">
+        <layout_hint size="728, 70, 0" />
+        <text style="fc_style_text_impose" id="fc_text_adv_label" label="fc_msg_adv">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="44, 0" />
+        </text>
+        <check_box id="fc_check_lowlat">
+          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="168, 0" />
+        </check_box>
+        <text style="fc_style_text_impose" id="fc_text_lowlat_label" label="fc_msg_lowlat">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="220, 0" />
+        </text>
+        <check_box id="fc_check_jit">
+          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="314, 0" />
+        </check_box>
+        <text style="fc_style_text_impose" id="fc_text_jit_label" label="fc_msg_jit">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="366, 0" />
+        </text>
+        <button style="_common_default_style_button" id="fc_button_softcap_down" label="fc_msg_left">
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="476, 0" />
+        </button>
+        <text style="fc_style_text_impose" id="fc_text_softcap_value">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="530, 0" />
+        </text>
+        <button style="_common_default_style_button" id="fc_button_softcap_up" label="fc_msg_right">
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="580, 0" />
+        </button>
+        <text style="fc_style_text_impose" id="fc_text_softcap_label" label="fc_msg_softcap">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="636, 0" />
+        </text>
+      </group>
+    </template>
+  </templatetable>
+
+  <stringtable>
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="en" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="en-gb" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="ja" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="fr" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="es" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="de" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="it" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="nl" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="pt" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="pt-br" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="ru" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="ko" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="zh-t" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="zh-s" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="fi" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="sv" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="da" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="no" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="pl" />
+    <locale src="RES_RCO_TMP/fpsvita_locale_en.xml.rcs" id="tr" />
+  </stringtable>
+
+  <texturetable />
+
+  <filetable />
+
+</resource>

@@ -1,0 +1,11 @@
+/* paf/std/xtree - override: use standard C++ tree (via map/set) */
+#ifndef _VDSUITE_USER_PAF_STD_XTREE_H
+#define _VDSUITE_USER_PAF_STD_XTREE_H
+#ifndef _XTREE_
+#define _XTREE_
+/* ScePaf-RE's xtree uses MSVC-internal headers unavailable on GCC.
+   paf::map/set will be satisfied by the standard <map>/<set>. */
+#include <map>
+#include <set>
+#endif
+#endif

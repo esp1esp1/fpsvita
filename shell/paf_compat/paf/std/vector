@@ -1,0 +1,6 @@
+/* paf/std/vector - override: use standard <vector> */
+#ifndef _VDSUITE_USER_PAF_STD_VECTOR_H
+#define _VDSUITE_USER_PAF_STD_VECTOR_H
+#include <vector>
+#include <paf/std/std_bridge>
+#endif
