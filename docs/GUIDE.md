@@ -2,7 +2,7 @@
 
 This is the long version of the README. It assumes nothing about how a console draws frames.
 
-## 1. Vsync in one page
+## 1. Vsync
 
 The Vita's screen refreshes 60 times a second. Between two refreshes there is a short gap
 called the **vblank**. A game that wants smooth, tear-free motion finishes drawing a frame,
