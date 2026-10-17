@@ -21,31 +21,51 @@ Frame-rate limits, anti-lag and tearing for PS Vita games, controlled live from 
 
 ## Install
 
-Grab the release zip and copy:
+You need a Vita running HENkaku or ensō (so taiHEN is loading plugins) and a way to copy
+files onto it, such as VitaShell's FTP or USB mode.
 
-```
-ur0:tai/fpsvita-kernel.skprx
-ur0:tai/fpsvita-ui.suprx
-ur0:tai/fpsvita-helper.suprx
-ur0:data/fpsvita/fpsvita_plugin.rco
-```
+1. Download `fpsvita-v0.1.0.zip` from the
+   [Releases](https://github.com/esp1esp1/fpsvita/releases) page and unzip it. Inside are a
+   `ur0` folder, a `lite` folder and the docs.
+2. Copy the **contents** of the `ur0` folder onto the Vita's `ur0:` partition, keeping the
+   folder structure. Afterwards these four files must exist on the Vita:
 
-Add to `ur0:tai/config.txt`:
+   ```
+   ur0:tai/fpsvita-kernel.skprx
+   ur0:tai/fpsvita-ui.suprx
+   ur0:tai/fpsvita-helper.suprx
+   ur0:data/fpsvita/fpsvita_plugin.rco
+   ```
 
-```ini
-*KERNEL
-ur0:tai/fpsvita-kernel.skprx
+   `ur0:data/fpsvita` does not exist yet on a fresh install; create it. Skip the `lite` folder,
+   it is a separate variant (see [Lite mode](#lite-mode)), never install both.
+3. Open your taiHEN config in a text editor (in VitaShell: highlight the file, Triangle, Open
+   with Text Editor). It is `ur0:tai/config.txt`, **unless** `ux0:tai/config.txt` exists, in
+   which case taiHEN uses that one and you must edit it instead. Add one line under each of
+   these three section headers. The headers are probably already there; if a header is
+   missing, add it:
 
-*main
-ur0:tai/fpsvita-ui.suprx
+   ```ini
+   *KERNEL
+   ur0:tai/fpsvita-kernel.skprx
 
-*ALL
-ur0:tai/fpsvita-helper.suprx
-```
+   *main
+   ur0:tai/fpsvita-ui.suprx
 
-Put `fpsvita-ui.suprx` before `PSVshellPlus_Shell.suprx` under `*main` if you have it, so the
-fpsvita rows come first (or after, if you prefer PSVshellPlus on top). Reboot. When updating,
-replace all four files together.
+   *ALL
+   ur0:tai/fpsvita-helper.suprx
+   ```
+
+   If you have PSVshellPlus, put the `fpsvita-ui.suprx` line **above** its `*main` line so the
+   fpsvita rows appear above System Control (below it puts them underneath).
+4. Reboot the Vita. Start any game, hold the PS button, and scroll down in the quick menu: the
+   three fpsvita rows appear above System Control. If they do not, see
+   [Good to know](#good-to-know).
+
+**Updating:** replace all four files with the ones from the new zip, then reboot. Never mix
+files from two versions. **Uninstalling:** remove the three lines from the config, reboot,
+delete the files; `ur0:data/fpsvita/` also holds your settings, delete it if you do not want
+them back later.
 
 ## Using it
 
@@ -117,10 +137,14 @@ install it together with the full set.
   title. Plain text, written by the menu. `state.txt` is safe to edit at any time; the menu
   only reads `config.txt` at boot and rewrites it on every change, so reboot after editing
   that one.
-- **Beta.** Developed and tested on one retail Vita with ensō on 3.65; 3.60 should work. If a
-  title misbehaves, please report its id and the lines from `ur0:data/fpsvita/helper.log`.
-- **If the quick menu rows disappear after a boot**, hold L while powering on to skip plugins,
-  then comment the `fpsvita-ui` line out of `config.txt` and send `ur0:data/fpsvita/boot.log`.
+- **Tested on** one retail Vita with ensō on 3.65; 3.60 should work. If a title misbehaves,
+  please [open an issue](https://github.com/esp1esp1/fpsvita/issues) with its id and the lines
+  from `ur0:data/fpsvita/helper.log`.
+- **If the quick menu rows are missing**, first check the four files and three config lines
+  above. If the rows were there and disappear after a boot, hold L while powering on to skip
+  plugins, comment the `fpsvita-ui` line out of the config, and open an issue with
+  `ur0:data/fpsvita/boot.log`.
+- **Changes between versions:** [CHANGELOG.md](CHANGELOG.md).
 - **Building and how it works:** [docs/HACKING.md](docs/HACKING.md). The measurements behind the
   options: [docs/latency-measurements.md](docs/latency-measurements.md).
 
