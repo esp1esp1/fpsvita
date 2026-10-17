@@ -49,6 +49,15 @@ replace all four files together.
 
 ## Using it
 
+**Read [docs/GUIDE.md](docs/GUIDE.md) before you change a game's rate.** It explains what each
+mode and option does, what it costs, and what to do when a game misbehaves. The short version:
+a game that speeds up at 60 fps ties its speed to the frame rate, and only its own rate fixes
+that.
+
+**Do not run Framecapper alongside fpsvita.** Both hook the same display waits, and the result
+is undefined. VitaGrafix coexists; its FPS patches show up as the `(game ..)` value. Other plugin
+combinations are untested.
+
 Open the quick menu (hold PS) with a game running and scroll down:
 
 ```
@@ -80,8 +89,8 @@ defaults for everything.
 **Latency row.** Antilag is the one to try first on everything. Lowlat helps titles that keep
 their display queue full (the overlay's QUEUE row near a full frame says so) and applies from
 the game's next launch. Limiter holds Uncapped games to a chosen rate without vsync, for 40 or
-45 fps or for games that cannot be limited the normal way. The reasoning behind each, with
-numbers, is in [docs/GUIDE.md](docs/GUIDE.md).
+45 fps or for games that cannot be limited the normal way. The guide has the reasoning behind
+each, with numbers.
 
 **Vsync checkbox.** Appears only when `config.txt` has `vsync=0` or `vsync=1` instead of the
 default `vsync=auto`. With auto, forced vsync engages by itself on the few games that never
@@ -108,9 +117,6 @@ install it together with the full set.
   title. Plain text, written by the menu. `state.txt` is safe to edit at any time; the menu
   only reads `config.txt` at boot and rewrites it on every change, so reboot after editing
   that one.
-- **Other plugins.** Do not run Framecapper alongside fpsvita, both hook the same display
-  waits. VitaGrafix coexists; its FPS patches show up as the `(game ..)` value. Other
-  combinations are untested.
 - **Beta.** Developed and tested on one retail Vita with ensō on 3.65; 3.60 should work. If a
   title misbehaves, please report its id and the lines from `ur0:data/fpsvita/helper.log`.
 - **If the quick menu rows disappear after a boot**, hold L while powering on to skip plugins,
