@@ -11,12 +11,16 @@ Frame-rate limits, anti-lag and tearing for PS Vita games, controlled live from 
 
 - **Frame limit on the fly.** Default, 60, 30, 20, Uncapped or Tearing, switched while the game
   runs. Cap a stuttery 60 fps game to a solid 30, or let a 30 fps game run at 60 if it can.
+  This only works on games that keep their own time; many Vita games do not, and run too fast
+  or in slow motion at any rate but their own. The
+  [compatibility list](docs/compatibility-list.md) has the known good and the known bad.
 - **Per-game profiles.** Save stores the whole row for that title; it is applied at every later
   launch and the global defaults come back when the game exits.
 - **Anti-lag.** Most games read the controller a hair before the new sample arrives and play on
   input a whole frame old. Anti-lag fixes that: 11 to 24 ms less input-to-screen latency on
   most of the titles measured, with no change in frame rate. It cannot help a game that
-  reads the controller mid-frame; the guide lists both kinds.
+  reads the controller mid-frame; the guide lists both kinds. It works at the game's own rate,
+  so it is the part to try on any game.
 - **Low latency, Limiter, Tearing.** One frame less in the display queue; a limiter for any
   rate (40, 45, 50) without vsync; and PC-style vsync-off tearing for the lowest latency the
   hardware allows.
@@ -76,8 +80,10 @@ them back later.
 
 **Read [docs/GUIDE.md](docs/GUIDE.md) before you change a game's rate.** It explains what each
 mode and option does, what it costs, and what to do when a game misbehaves. The short version:
-a game that speeds up at 60 fps ties its speed to the frame rate, and only its own rate fixes
-that.
+many Vita games, PS2 and PS3 remasters and Koei Tecmo titles especially, advance their world a
+fixed step per frame. On those, a higher limit runs the game too fast and a lower one plays as
+slow motion. Default is always safe. Check the
+[compatibility list](docs/compatibility-list.md) before you change a game's rate.
 
 **Do not run Framecapper alongside fpsvita.** Both hook the same display waits, and the result
 is undefined. VitaGrafix coexists; its FPS patches show up as the `(game ..)` value. Other plugin
@@ -99,12 +105,12 @@ itself, so you can see what you are changing.
 | Limit | What you get |
 |-------|--------------|
 | Default | The game's own rate, untouched. |
-| 60fps, 30fps, 20fps | The game waits one, two or three screen refreshes per frame. A steady 30 often feels better than a game that can't reach 60. |
+| 60fps, 30fps, 20fps | The game waits one, two or three screen refreshes per frame. A steady 30 often feels better than a game that can't reach 60. Only on games that keep their own time. |
 | Uncapped | The game runs as fast as it renders; the screen shows the newest complete frame each refresh, no tearing. |
 | Tearing | Uncapped, and each new frame goes to the screen immediately, mid-refresh. Lowest latency, visible seams. |
 
-A game that speeds up at 60 ties its game speed to the frame rate. Put it back on its own rate
-and Save; there is no way to fix that from outside.
+A game that runs too fast above its own rate, or in slow motion below it, ties its game speed
+to the frame rate. Put it back on Default and Save; there is no way to fix that from outside.
 
 **Save** stores the row as that title's profile. With no game running, the rows set the
 defaults for everything.
@@ -114,7 +120,8 @@ defaults for everything.
 **Latency row.** Antilag is the one to try first on everything. Lowlat helps titles that keep
 their display queue full (the overlay's QUEUE row near a full frame says so) and applies from
 the game's next launch. Limiter holds Uncapped games to a chosen rate without vsync, for 40 or
-45 fps or for games that cannot be limited the normal way. The guide has the reasoning behind
+45 fps or for games that cannot be limited the normal way. It changes the rate too, so the
+same caveat applies. The guide has the reasoning behind
 each, with numbers.
 
 **Vsync checkbox.** Appears only when `config.txt` has `vsync=0` or `vsync=1` instead of the

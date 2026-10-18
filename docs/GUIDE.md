@@ -17,11 +17,12 @@ Three things follow from this:
   matter how fast it could draw. fpsvita works by changing that number.
 - **Many games tie their speed to the wait.** Older engines and many ports advance the world by
   a fixed step per frame instead of by measured time. Change the wait from two vblanks to one
-  and the game runs at 60 fps **and** twice as fast: enemies, music cues, timers, physics. Those
-  games can only be slowed down, not sped up, and some break at any rate but their own. There
-  is no way to tell from outside; the `(game ..)` value in the menu tells you what the game
-  asked for, and the overlay tells you what it got. If a game feels wrong at a new limit, put it
-  back.
+  and the game runs at 60 fps **and** twice as fast: enemies, music cues, timers, physics.
+  Lower the wait instead and the same game plays in slow motion. On those games only Default is
+  right. There is no way to tell from outside; the `(game ..)` value in the menu tells you what
+  the game asked for, and the overlay tells you what it got. The
+  [compatibility list](compatibility-list.md) has the games known to be fine at a given limit
+  and the ones reported speed-tied. If a game feels wrong at a new limit, put it back.
 - **Waiting is also where input latency hides.** The game reads the controller, simulates,
   draws, submits, then waits. Everything it read at the start of the frame reaches the screen
   one or more frames later. The latency options below all move the read closer to the screen.
@@ -43,7 +44,7 @@ something else is already pacing, for example VitaGrafix's frame-rate patches.
 |------|----------------------|------------|
 | Default | Nothing. Every call chains straight through. | The default. Anything that works. |
 | 60fps | Every display wait becomes a one-vblank wait. | Games that run at 30 by choice but draw fast enough for 60, and do not tie speed to the frame. |
-| 30fps | Two vblanks. | A 60 fps game that drops frames unevenly; a steady 30 feels better than 45 to 60. |
+| 30fps | Two vblanks. | A 60 fps game that drops frames unevenly and keeps its own time; a steady 30 feels better than 45 to 60. |
 | 20fps | Three vblanks. | Heavy ports that cannot hold 30. |
 | Uncapped | Display waits return at once. The panel still shows one complete frame per refresh, the newest one. | Measuring what the game can draw, and games with their own timers that benefit from more frames. Never for speed-tied games. |
 | Tearing | Uncapped, and every flip takes effect immediately, mid-refresh. | The lowest latency the hardware allows, at the cost of visible seams. Needs the kernel module. |
@@ -171,8 +172,9 @@ scene change, and the whole overlay hides itself when no game is running.
 
 ## 5. Things that go wrong
 
-- **Game runs at double speed at 60fps.** Speed-tied engine. Use its native rate or 30; Save
-  it per game so it never happens again.
+- **Game runs at double speed at a higher limit.** Speed-tied engine. Use Default; Save it per
+  game so it never happens again.
+- **Game plays in slow motion at a lower limit.** The same thing the other way. Use Default.
 - **Limit shows but fps reads far above it.** The title never waits and vsync has not engaged
   (fewer than 30 presents without a wait, or the game is not actually faster than the limit).
   Give it a few seconds; if it persists the title needs vsync forced: `vsync=1` in

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Docs: a compatibility list (games known fine at a given limit, games with good latency
+  measurements, games reported speed-tied), and the README and guide now say plainly that a
+  limit other than Default only suits games that keep their own time. The guide's advice to
+  use 30 on a game that runs double speed at 60 was wrong for 60 fps games; it is Default now.
+
 ## v0.1.0 (2026-10-17)
 
 First release. Changes since v0.1.0-beta.1, which was a code review and a documentation pass
