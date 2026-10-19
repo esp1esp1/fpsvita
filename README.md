@@ -33,7 +33,7 @@ Frame-rate limits, anti-lag and tearing for PS Vita games, controlled live from 
 You need a Vita running HENkaku or ensō (so taiHEN is loading plugins) and a way to copy
 files onto it, such as VitaShell's FTP or USB mode.
 
-1. Download `fpsvita-v0.1.0.zip` from the
+1. Download `fpsvita-v0.1.1.zip` from the
    [Releases](https://github.com/esp1esp1/fpsvita/releases) page and unzip it. Inside are a
    `ur0` folder, a `lite` folder and the docs.
 2. Copy the **contents** of the `ur0` folder onto the Vita's `ur0:` partition, keeping the

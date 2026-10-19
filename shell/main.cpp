@@ -546,7 +546,13 @@ int __module_start(SceSize args, const void *argp)
 	mem.size = sizeof(mem);
 	if (sceKernelGetFreeMemorySize(&mem) >= 0)
 		dbg_hex("free_main", (uint32_t)mem.size_user);
-	installCrashHandler();
+	/* kubridge is optional and only v0.3+ exports the exception API. Its
+	 * imports are weak: an unresolved one is left as `sub ip, pc, #8;
+	 * mov pc, #0`, and calling it takes SceShell down at boot. */
+	if (*(const volatile uint32_t *)((uintptr_t)&kuKernelRegisterExceptionHandler & ~1u) != 0xE24FC008)
+		installCrashHandler();
+	else
+		DBG("kubridge v0.3+ not loaded - no crash log");
 
 	/* Hook stage 1: sceAVConfigRegisterCallback (one-shot init) */
 	s_hookId[0] = taiHookFunctionImport(

@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## v0.1.1 (2026-10-19)
+
+### Fixed
+
+- The Vita hung on the boot logo unless kubridge v0.3 or later was installed: the menu plugin
+  called kubridge's exception API for its crash log without checking that it exists, and
+  kubridge v0.1/v0.2 or no kubridge at all crashed SceShell at startup. kubridge is now
+  optional ([#2](https://github.com/esp1esp1/fpsvita/issues/2)).
 
 ### Changed
 
