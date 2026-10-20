@@ -169,7 +169,7 @@ static void writeConfigFile(int32_t interval, int32_t inject, int32_t autodetect
  */
 static bool appendPerGameLine(char *out, int *outpos, int outsize,
                                const char *titleid, int32_t interval,
-                               int32_t advFlags, int32_t softcap, bool readPeek)
+                               int32_t advFlags, int32_t softcap, const char *extra)
 {
 	char line[96];
 	const char *antilag = (advFlags & FPSVITA_ADV_JIT) ? "1"
@@ -179,8 +179,7 @@ static bool appendPerGameLine(char *out, int *outpos, int outsize,
 	                         titleid, interval,
 	                         (advFlags & FPSVITA_ADV_LOWLAT) ? 1 : 0,
 	                         antilag, softcap,
-	                         (advFlags & FPSVITA_ADV_TEAR) ? 1 : 0,
-	                         readPeek ? ",read=peek" : "");
+	                         (advFlags & FPSVITA_ADV_TEAR) ? 1 : 0, extra);
 	if (n <= 0 || n >= (int)sizeof(line))
 		return false;
 	if (*outpos + n >= outsize - 1)   /* readWhole refuses a file of outsize - 1 bytes */
@@ -201,8 +200,29 @@ void Impose::PersistState()
 	writeConfigFile(g_globalInterval, currentInject, autodetect);
 }
 
-/* The per-game line has no UI for "read=peek"; carry it over when the user
- * saves the other options. */
+/* Per-game keys with no quick-menu UI (",read=peek", ",panel=<hz>"): carried
+ * over verbatim when the user saves the other options. */
+static void lineExtraKeys(const char *p, int len, char *out, int outsize)
+{
+	int o = 0;
+	out[0] = '\0';
+	for (int i = 0; i < len; i++) {
+		int take = 0;
+		if (i + 10 <= len && sce_paf_strncmp(p + i, ",read=peek", 10) == 0)
+			take = 10;
+		else if (i + 7 < len && sce_paf_strncmp(p + i, ",panel=", 7) == 0) {
+			take = 7;
+			while (i + take < len && p[i + take] >= '0' && p[i + take] <= '9')
+				take++;
+		}
+		if (take && o + take < outsize) {
+			sce_paf_memcpy(out + o, p + i, take);
+			o += take;
+			out[o] = '\0';
+		}
+	}
+}
+
 static bool lineHasReadPeek(const char *p, int len)
 {
 	for (int i = 0; i + 10 <= len; i++)
@@ -254,7 +274,7 @@ void Impose::SavePerGame()
 	sce_paf_memset(s_rebuilt, 0, sizeof(s_rebuilt));
 	int outpos = 0;
 	bool found = false;
-	bool readPeek = false;
+	char extra[32];
 
 	char *p = s_readBuf;
 	while (*p && p < s_readBuf + bytes) {
@@ -274,10 +294,10 @@ void Impose::SavePerGame()
 		}
 
 		if (match) {
-			readPeek = lineHasReadPeek(p, linelen);
+			lineExtraKeys(p, linelen, extra, sizeof(extra));
 			if (!appendPerGameLine(s_rebuilt, &outpos, sizeof(s_rebuilt),
 			                        titleid, currentInterval, advFlags, softcap,
-			                        readPeek))
+			                        extra))
 				return;
 			found = true;
 		} else if (linelen > 0) {
@@ -294,7 +314,7 @@ void Impose::SavePerGame()
 
 	if (!found && !appendPerGameLine(s_rebuilt, &outpos, sizeof(s_rebuilt),
 	                                  titleid, currentInterval, advFlags, softcap,
-	                                  false))
+	                                  ""))
 		return;
 
 	writeWhole(FPSVITA_STATE_FILE, s_rebuilt, outpos);

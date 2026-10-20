@@ -12,6 +12,8 @@ target_include_directories(fpsvita-kernel PRIVATE
 
 target_link_libraries(fpsvita-kernel
   taihen_stub
+  taihenForKernel_stub
+  taihenModuleUtils_stub
   SceThreadmgrForDriver_stub
   SceSysmemForDriver_stub
   SceDebugForDriver_stub

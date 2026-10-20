@@ -67,7 +67,7 @@ struct Impose {
 
 /* companion side */
 namespace comp {
-typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int pg_read; } HelperConfig;
+typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int pg_read; int32_t pg_panel; } HelperConfig;
 #include "comp_io.inc"
 }
 
@@ -173,6 +173,12 @@ int main(){
     put("PCSE00411=1,read=peek\n");
     { Impose o=mk("PCSE00411",1,0,1); o.SavePerGame(); }
     expect("Save keeps read=peek", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek\n")!=NULL);
+    put("PCSE00411=1,read=peek,panel=40\n");
+    { Impose o=mk("PCSE00411",1,0,1); o.SavePerGame(); }
+    expect("Save keeps read=peek and panel=", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek,panel=40\n")!=NULL);
+    expect("helper reads panel=", RGC("PCSE00411")==1 && c.pg_panel==40 && c.pg_read==1);
+    put("PCSE00411=1\n");
+    expect("no panel= -> 0", RGC("PCSE00411")==1 && c.pg_panel==0);
     put("PCSB00069=3\nPCSE00411=1,read=peek\n");
     expect("titleReadsPeek finds the title's read=peek", titleReadsPeek("PCSE00411"));
     expect("and not another title's", !titleReadsPeek("PCSB00069") && !titleReadsPeek("PCSZ99999"));

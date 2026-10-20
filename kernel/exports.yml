@@ -20,3 +20,4 @@ fpsvita-kernel:
         - fpsvitaSetAdvanced
         - fpsvitaSetStats
         - fpsvitaSetFrameBufImmediate
+        - fpsvitaSetPanel

@@ -124,6 +124,9 @@ static void helperLog(const char *msg)
 
 static volatile int32_t  g_inject_active     = 0;
 static volatile int32_t  g_last_interval     = FPSVITA_INTERVAL_OFF;
+/* One vblank: 59.94 Hz unless a per-game panel=<hz> is in force (from the
+ * kernel's panel_hz on every state read). */
+static volatile uint32_t g_vblank_us = FPSVITA_VBLANK_US;
 static volatile uint32_t g_paced_streak      = 0;
 
 /* Set once this process has hooks installed and has written its title id
@@ -149,6 +152,7 @@ typedef struct HelperConfig {
 	 * line has none: the globals apply. */
 	int32_t pg_ll, pg_jit, pg_sc, pg_tear;
 	int     pg_read;      /* per-game "read=peek": blocking Read becomes Peek */
+	int32_t pg_panel;     /* per-game "panel=<hz>" (experimental), 0 none */
 } HelperConfig;
 
 /* Opt-in latency tweak, read from state.txt at launch (see readGameConfig) */
@@ -218,7 +222,7 @@ static int autodetectTick(uint32_t frames, int32_t cur, uint32_t period_us)
 
 	/* Rate gate (FPSVITA_AUTODETECT_RATE_MARGIN_PCT): engaging also needs a
 	 * measured present period clearly shorter than the cap's. */
-	uint32_t target_us = FPSVITA_VBLANK_US * (uint32_t)cur;
+	uint32_t target_us = g_vblank_us * (uint32_t)cur;
 	int fast = period_us != 0 &&
 	           period_us * 100u <= target_us * (100u - FPSVITA_AUTODETECT_RATE_MARGIN_PCT);
 
@@ -561,7 +565,7 @@ static volatile uint32_t s_entry_tied;   /* flips tied exactly by framebuffer ad
 static SceSize s_cb_data_size;           /* displayQueueCallbackDataSize from sceGxmInitialize */
 static volatile int32_t s_fscan_ema;     /* frame's own input age at its flip */
 static volatile uint32_t s_flag_ema, s_entry_unmatched;   /* frame's own submit-to-flip; flips with no ring match */
-#define FPSVITA_FRESH_DUE_US   15000u   /* sample this old: the next one is due within ~2 ms */
+#define FPSVITA_FRESH_EARLY_US 1683u    /* sample a vblank less this old: the next one is due within ~2 ms */
 #define FPSVITA_FRESH_WAIT_US  2500u
 static volatile uint32_t s_miss_dbl, s_miss_near, s_imm_calls, s_imm_err, s_imm_code;
 static volatile int s_tearWanted, s_tearOk;   /* Uncapped + ADV_TEAR (last frame's state); last kernel flip succeeded */
@@ -618,7 +622,8 @@ static int freshPoll(tai_hook_ref_t ref, int peekIdx, int port, SceCtrlData *pad
                      int r, int32_t age)
 {
 	if (!(s_jitEnabled || s_autoEnabled)
-	    || r <= 0 || age < (int32_t)FPSVITA_FRESH_DUE_US || age > 40000)
+	    || r <= 0 || age < (int32_t)(g_vblank_us - FPSVITA_FRESH_EARLY_US)
+	    || age > (int32_t)(g_vblank_us * 12u / 5u))
 		return r;
 	uint64_t ts = newestStamp(pad, r);
 	uint32_t t0 = sceKernelGetProcessTimeLow(), spent;
@@ -732,7 +737,7 @@ static int injectWanted(const FpsvitaState *st)
  * of FPSVITA_JIT_RAMP good frames starts over. */
 static void jitSleep(uint32_t t_ret, int32_t cur)
 {
-	uint32_t target = FPSVITA_VBLANK_US * (uint32_t)cur;
+	uint32_t target = g_vblank_us * (uint32_t)cur;
 	uint32_t work = s_work_prev_max > s_work_win_max ? s_work_prev_max : s_work_win_max;
 	if (work > s_work_ema * 3 + 2000)   /* one wild sample must not stall the ramp */
 		work = s_work_ema * 3 + 2000;
@@ -740,7 +745,7 @@ static void jitSleep(uint32_t t_ret, int32_t cur)
 	if (s_jit_backoff > 0) { s_jit_backoff--; return; }
 	if (s_jit_ramp < FPSVITA_JIT_RAMP) { s_jit_ramp++; return; }
 	uint32_t need = work + FPSVITA_JIT_MARGIN_US + FPSVITA_FRESH_WAIT_US;
-	uint32_t k = target > need ? (target - need) / FPSVITA_VBLANK_US : 0;
+	uint32_t k = target > need ? (target - need) / g_vblank_us : 0;
 	if (k >= (uint32_t)cur) k = (uint32_t)cur - 1;
 	/* Only time the frame would have spent queued is free to sleep: the
 	 * per-frame submit-to-flip (s_flag_ema) measured while not sleeping.
@@ -751,12 +756,12 @@ static void jitSleep(uint32_t t_ret, int32_t cur)
 	if (!s_jit_k) {
 		s_jit_flag0 = s_flag_ema;
 		uint32_t avail = s_flag_ema > FPSVITA_JIT_MARGIN_US
-		               ? (s_flag_ema - FPSVITA_JIT_MARGIN_US) / FPSVITA_VBLANK_US : 0;
+		               ? (s_flag_ema - FPSVITA_JIT_MARGIN_US) / g_vblank_us : 0;
 		if (k > avail) k = avail;
 	} else {
 		if (++s_jit_k_frames >= FPSVITA_JIT_SETTLE
-		    && s_flag_ema + s_jit_k * FPSVITA_VBLANK_US
-		       > s_jit_flag0 + FPSVITA_JIT_MARGIN_US + FPSVITA_VBLANK_US / 4) {
+		    && s_flag_ema + s_jit_k * g_vblank_us
+		       > s_jit_flag0 + FPSVITA_JIT_MARGIN_US + g_vblank_us / 4) {
 			s_jit_hurt++; s_jit_backoff = FPSVITA_JIT_BACKOFF; s_jit_ramp = 0; s_jit_k = 0;
 			return;
 		}
@@ -764,7 +769,7 @@ static void jitSleep(uint32_t t_ret, int32_t cur)
 	}
 	if (k && !s_jit_k) s_jit_k_frames = 0;
 	s_jit_k = k;
-	uint32_t slack = k * FPSVITA_VBLANK_US;
+	uint32_t slack = k * g_vblank_us;
 	s_jit_slack = slack;
 	if (!slack)
 		return;
@@ -801,7 +806,7 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 			 * GPU time is not in it, so this is a lower bound on misses. */
 			int32_t tgt = g_last_interval;   /* last fetched, no extra syscall */
 			if (tgt > 0) {
-				uint32_t budget = FPSVITA_VBLANK_US * (uint32_t)tgt;
+				uint32_t budget = g_vblank_us * (uint32_t)tgt;
 				if (work > budget && work - budget <= 2000) s_miss_near++;
 			}
 			emaStep(&s_work_ema, work);
@@ -823,6 +828,7 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 	int32_t cur = st.interval;
 	s_jitEnabled = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
 	s_autoEnabled = (st.adv_flags & FPSVITA_ADV_AUTO) != 0;
+	g_vblank_us = st.panel_hz > 0 ? 1000000u / (uint32_t)st.panel_hz : FPSVITA_VBLANK_US;
 	if (s_softcap != st.softcap)
 		s_lim_next = 0;
 	s_softcap = st.softcap;
@@ -830,7 +836,7 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 		uint32_t d = t_ret - s_ae_last_raw;      /* full frame, sleep included */
 		if (d < 2000000) {
 			emaStep(&s_ae_period_ema, d);
-			if (cur > 0 && d > FPSVITA_VBLANK_US * (uint32_t)cur * 5u / 4u && s_jit_slack) {
+			if (cur > 0 && d > g_vblank_us * (uint32_t)cur * 5u / 4u && s_jit_slack) {
 				s_jit_missed++; s_jit_backoff = FPSVITA_JIT_BACKOFF; s_jit_ramp = 0; s_jit_k = 0;
 			}
 		}
@@ -972,6 +978,7 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 	fpsvitaGetState(&st);
 	s_jitEnabled = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
 	s_autoEnabled = (st.adv_flags & FPSVITA_ADV_AUTO) != 0;
+	g_vblank_us = st.panel_hz > 0 ? 1000000u / (uint32_t)st.panel_hz : FPSVITA_VBLANK_US;
 	int32_t cur = st.interval;
 	s_tearWanted = (cur == FPSVITA_INTERVAL_UNCAPPED) && (st.adv_flags & FPSVITA_ADV_TEAR) != 0;
 
@@ -985,7 +992,7 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 			/* A present period of about twice the cap: a frame missed its
 			 * vblank (GPU included; the CPU-only near count is in AddEntry). */
 			if (cur > 0) {
-				uint32_t budget = FPSVITA_VBLANK_US * (uint32_t)cur;
+				uint32_t budget = g_vblank_us * (uint32_t)cur;
 				if (d > budget * 3 / 2 && d < budget * 5 / 2) s_miss_dbl++;
 			}
 		}
@@ -1176,6 +1183,8 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 						cfg->pg_tear = sceClibStrtoll(q + 9, NULL, 10) ? 1 : 0;
 					else if (eol - q > 9 && sceClibStrncmp(q, ",read=peek", 10) == 0)
 						cfg->pg_read = 1;
+					else if (eol - q > 7 && sceClibStrncmp(q, ",panel=", 7) == 0)
+						cfg->pg_panel = (int32_t)sceClibStrtoll(q + 7, NULL, 10);
 					q++;
 				}
 			}
@@ -1204,6 +1213,7 @@ static __attribute__((noinline)) void readGameConfig(const char *titleid,
 	cfg->tear = 0;
 	cfg->pg_ll = cfg->pg_jit = cfg->pg_sc = cfg->pg_tear = -1;
 	cfg->pg_read = 0;
+	cfg->pg_panel = 0;
 
 	/* One buffer size shared with the shell (FPSVITA_STATE_BUF), so the
 	 * writer can never produce a file this reader cannot fully see. Static
@@ -1419,7 +1429,19 @@ static void takeKernelOwnership(void)
 {
 	if (s_ownsKernelState)
 		return;
-	writeTitleIdToKernel(s_titleid);
+	writeTitleIdToKernel(s_titleid);   /* releases any panel rate the last title left */
+	if (s_cfg.pg_panel > 0) {
+		/* The kernel range-checks it and refuses on anything but the OLED's
+		 * stock mode 0 table; the line says what was granted. */
+		FpsvitaState st;
+		char line[64];
+		fpsvitaSetPanel(s_cfg.pg_panel);
+		st.panel_hz = 0;
+		fpsvitaGetState(&st);
+		sceClibSnprintf(line, sizeof(line), "helper: panel want=%d got=%d\n",
+		                (int)s_cfg.pg_panel, (int)st.panel_hz);
+		helperLog(line);
+	}
 	fpsvitaSetNativeInterval(0);
 	s_savedInterval = s_cfg.interval;
 	{

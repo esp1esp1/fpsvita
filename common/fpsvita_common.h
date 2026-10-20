@@ -168,7 +168,12 @@ typedef struct FpsvitaState {
 	int32_t  adv_flags;     /* FPSVITA_ADV_* requested for the running title */
 	int32_t  softcap;       /* fps, 0 off */
 	FpsvitaStats stats;
+	int32_t  panel_hz;      /* experimental panel refresh in force, 0 = stock 59.94 Hz */
 } FpsvitaState;
+
+/* Per-game `panel=<hz>` (experimental): OLED mode 0 only, see kernel/main.c */
+#define FPSVITA_PANEL_HZ_MIN (24)
+#define FPSVITA_PANEL_HZ_MAX (59)
 
 /* Copies sizeof(FpsvitaState) to user memory. The three modules must be
  * deployed together: a reader built against a shorter struct would have its
@@ -190,6 +195,7 @@ FPSVITA_API void fpsvitaSetHud(int32_t mode, int32_t pos);
 FPSVITA_API void fpsvitaSetAdvanced(int32_t flags, int32_t softcap);
 FPSVITA_API void fpsvitaSetStats(const FpsvitaStats *in);  /* copy-in from user memory */
 FPSVITA_API int  fpsvitaSetFrameBufImmediate(const void *fb); /* experiment: kernel IMMEDIATE flip */
+FPSVITA_API void fpsvitaSetPanel(int32_t hz);   /* owner only; 0 = stock refresh */
 
 static inline int32_t fpsvitaGetInterval(void)
 { FpsvitaState s; s.interval = FPSVITA_INTERVAL_OFF; fpsvitaGetState(&s); return s.interval; }

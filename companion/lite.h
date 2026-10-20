@@ -37,3 +37,4 @@ LITE_UNUSED static void fpsvitaSetAdvanced(int32_t flags, int32_t sc)
 }
 LITE_UNUSED static void fpsvitaSetStats(const FpsvitaStats *in) { (void)in; }
 LITE_UNUSED static int fpsvitaSetFrameBufImmediate(const void *fb) { (void)fb; return -1; }
+LITE_UNUSED static void fpsvitaSetPanel(int32_t hz) { (void)hz; }   /* no kernel: stock refresh */

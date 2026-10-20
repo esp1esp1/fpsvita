@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.1 (2026-10-20, experimental)
+
+### Added
+
+- Experimental per-game panel refresh: `,panel=<hz>` (24 to 59) on a title's `state.txt` line
+  runs the screen at that rate while the title runs, and the limits count in its refreshes
+  (the 60 limit at `panel=40` is an even 40 fps). OLED Vita (PCH-1000) only, tested on
+  firmware 3.65; anything else is left alone. No quick-menu control: the overlay shows `40HZ`
+  (Mini) or `@40HZ` (Full), and `helper.log` logs `helper: panel want=40 got=40`. 59.94 Hz
+  returns when the title exits. Input lag rises with the lower refresh; see the release notes.
+- `Save` keeps `panel=` on the title's line, like `read=peek`.
+
 ## v0.2.0 (2026-10-20)
 
 ### Added

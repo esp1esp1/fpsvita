@@ -356,8 +356,8 @@ void Hud::Refresh(const FpsvitaState &st)
 {
 	const FpsvitaStats &s = st.stats;
 	unsigned fps_i = s.fps_x10 / 10, fps_t = s.fps_x10 % 10;
-	int capfps = fpsvitaIntervalToFps(st.interval);
-	int nat = fpsvitaIntervalToFps(st.native_interval);
+	int capfps = fpsvitaIntervalToFpsAt(st.interval, st.panel_hz);   /* what the limit gives */
+	int nat = fpsvitaIntervalToFps(st.native_interval);              /* what the game asked for */
 	int reqLL = (st.adv_flags & FPSVITA_ADV_LOWLAT) != 0;
 	int onLL = (s.flags & FPSVITA_STATF_LOWLATENCY) != 0;      /* clamped by the helper */
 	int natLL = (s.flags & FPSVITA_STATF_LOWLAT_NATIVE) != 0;  /* the title's own setting */
@@ -410,6 +410,8 @@ void Hud::Refresh(const FpsvitaState &st)
 			pos = appendW(buf, pos, L"AL  ");
 		if (st.softcap > 0 && st.interval == FPSVITA_INTERVAL_UNCAPPED)
 			pos = appendW(buf, pos, L"LIM %d  ", (int)st.softcap);
+		if (st.panel_hz > 0)
+			pos = appendW(buf, pos, L"%dHZ  ", (int)st.panel_hz);
 		textSet(s_mini[1], buf);
 		return;
 	}
@@ -419,7 +421,11 @@ void Hud::Refresh(const FpsvitaState &st)
 	else
 		setRow(ROW_FPS, L"%u.%u", fps_i, fps_t);
 
-	if (mode)
+	if (st.panel_hz > 0 && mode)   /* experimental panel rate: the limit is in its vblanks */
+		setRow(ROW_LIMIT, L"%ls @%dHZ", mode, (int)st.panel_hz);
+	else if (st.panel_hz > 0)
+		setRow(ROW_LIMIT, L"%d @%dHZ", capfps, (int)st.panel_hz);
+	else if (mode)
 		setRow(ROW_LIMIT, nat > 0 ? L"%ls / OG:%d" : L"%ls", mode, nat);
 	else
 		setRow(ROW_LIMIT, nat > 0 ? L"%d / OG:%d" : L"%d FPS", capfps, nat);
@@ -475,7 +481,8 @@ void Hud::Refresh(const FpsvitaState &st)
 	 * fresh sample and still gained the most, from the queue); Lowlat only
 	 * where the queue held a frame; a limit the game misses in a tenth of
 	 * its frames is a limit it cannot hold. */
-	int capfps_tip = fpsvitaIntervalToFps(st.interval);
+	int capfps_tip = capfps;
+	uint32_t vblank = st.panel_hz > 0 ? 1000000u / (uint32_t)st.panel_hz : FPSVITA_VBLANK_US;
 	bool settled = s_now - s_settleFrom >= FPSVITA_HUD_SETTLE_US;
 	/* A limit the game runs a tenth under. (A rolling double-period count was
 	 * tried and dropped: one cutscene load tripped it for the next 300 frames.) */
@@ -483,8 +490,8 @@ void Hud::Refresh(const FpsvitaState &st)
 	/* Antilag's whole-vblank sleep only fits when the CPU work leaves a
 	 * vblank of headroom after its margins (2.5 ms each for the margin and
 	 * the fresh poll); MGS2 gameplay at 12 to 14 ms of work gained nothing. */
-	bool sleepFits = haveWork && (capfps_tip == 30 || capfps_tip == 20)
-	              && s.work_us + 5000u + FPSVITA_VBLANK_US <= (uint32_t)FPSVITA_VBLANK_US * (uint32_t)st.interval;
+	bool sleepFits = haveWork && (st.interval == FPSVITA_INTERVAL_30FPS || st.interval == FPSVITA_INTERVAL_20FPS)
+	              && s.work_us + 5000u + vblank <= vblank * (uint32_t)st.interval;
 	const wchar_t *compat = fpsvitaCompatWarn(fpsvitaCompatFlags((const char *)st.titleid),
 	                                          st.interval, s_readPeek);
 	if (compat)
@@ -495,7 +502,7 @@ void Hud::Refresh(const FpsvitaState &st)
 	else if (notHeld)
 		cand = TIP_NOTHELD;
 	else if ((!antilag && !antilagAuto && s.sample_age_us >= 10000u)
-	         || (!antilag && sleepFits && s.queue_us >= FPSVITA_VBLANK_US))
+	         || (!antilag && sleepFits && s.queue_us >= vblank))
 		cand = TIP_ANTILAG;
 	else if (!reqLL && !natLL && !onLL && s.frame_us && s.queue_us * 10u >= s.frame_us * 8u)
 		cand = TIP_LOWLAT;
@@ -512,14 +519,19 @@ void Hud::Refresh(const FpsvitaState &st)
 	const wchar_t *tip = L"...";
 	switch (s_tipShown) {
 	case TIP_NONE:    tip = L"NONE"; break;
-	case TIP_NOTHELD: tip = capfps_tip == 60 ? L"60 NOT HELD, TRY 30"
-	                      : capfps_tip == 30 ? L"30 NOT HELD, TRY 20" : L"20 NOT HELD"; break;
+	case TIP_NOTHELD: tip = NULL; break;   /* formatted below: the rates follow the panel */
 	case TIP_ANTILAG: tip = L"TRY FULL ANTI-LAG"; break;
 	case TIP_LOWLAT:  tip = L"TRY LOW LAT"; break;
 	case TIP_COMPAT:  tip = s_tipCompat; break;
 	default: break;
 	}
-	setRow(ROW_TIP, L"%ls", tip);
+	if (!tip && st.interval >= 1 && st.interval < 3)
+		setRow(ROW_TIP, L"%d NOT HELD, TRY %d", capfps_tip,
+		       fpsvitaIntervalToFpsAt(st.interval + 1, st.panel_hz));
+	else if (!tip)
+		setRow(ROW_TIP, L"%d NOT HELD", capfps_tip);
+	else
+		setRow(ROW_TIP, L"%ls", tip);
 
 	/* Last toggle: INPUT before > after, the real evidence. The value column
 	 * next to this label holds about 20 characters. */

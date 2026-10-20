@@ -91,3 +91,9 @@ static inline int fpsvitaIntervalToFps(int32_t interval)
 {
 	return (interval >= 1 && interval <= 3) ? 60 / interval : 0;
 }
+
+/* The same at the panel refresh in force (FpsvitaState.panel_hz, 0 = stock). */
+static inline int fpsvitaIntervalToFpsAt(int32_t interval, int32_t panel_hz)
+{
+	return (interval >= 1 && interval <= 3) ? (panel_hz > 0 ? panel_hz : 60) / interval : 0;
+}

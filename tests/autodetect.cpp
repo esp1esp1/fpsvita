@@ -10,6 +10,7 @@
 #define FPSVITA_AUTODETECT_RELEASE_STREAK (60)
 #define FPSVITA_AUTODETECT_RATE_MARGIN_PCT (10)
 #define FPSVITA_VBLANK_US (16683)
+static volatile uint32_t g_vblank_us = FPSVITA_VBLANK_US;
 
 /* Present period handed to the detector; 8 ms = a game free-running at
  * ~120 presents/s, the case inject exists for. */
