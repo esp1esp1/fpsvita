@@ -144,7 +144,7 @@ void fpsvitaSetHud(int32_t mode, int32_t pos)
 }
 
 /*
- * Tearing mode (and helper exp.txt bit 8): the user-mode sceDisplaySetFrameBuf
+ * Tearing mode: the user-mode sceDisplaySetFrameBuf
  * refuses SCE_DISPLAY_SETBUF_IMMEDIATE (0x80290006 on every title tested,
  * 2026-10-17); this takes the kernel entry point from the caller's process
  * context. The SceDisplayFrameBuf (sizeof, 0x18 bytes) is copied in from user
@@ -175,7 +175,8 @@ int fpsvitaSetFrameBufImmediate(const void *user_fb)
 void fpsvitaSetAdvanced(int32_t flags, int32_t softcap)
 {
 	SYSCALL_ENTER
-	g_adv_flags = flags & (FPSVITA_ADV_LOWLAT | FPSVITA_ADV_JIT | FPSVITA_ADV_TEAR);
+	g_adv_flags = flags & (FPSVITA_ADV_LOWLAT | FPSVITA_ADV_JIT
+	                       | FPSVITA_ADV_TEAR | FPSVITA_ADV_AUTO);
 	g_softcap = (softcap >= FPSVITA_SOFTCAP_MIN && softcap <= FPSVITA_SOFTCAP_MAX) ? softcap : 0;
 	SYSCALL_EXIT
 }

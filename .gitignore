@@ -1,4 +1,5 @@
 build/
+build-*/
 acdc-tool/
 res/RES_RCO_TMP/
 res/*.rco

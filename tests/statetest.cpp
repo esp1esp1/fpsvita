@@ -36,9 +36,11 @@ static void sceIoMkdir(const char *p, int) { char c[256]; snprintf(c,sizeof c,"m
 #define sce_paf_memset   memset
 #define sce_paf_memcpy   memcpy
 #define sce_paf_strncmp  strncmp
+#define sce_paf_strtol   strtol
 #define sceClibMemset    memset
 #define sceClibStrncmp   strncmp
 #define sceClibStrtoll   strtoll
+#define DBG(msg)         ((void)0)
 static int sce_paf_snprintf(char *b, size_t n, const char *f, ...) {
     va_list a; va_start(a,f); int r = vsnprintf(b,n,f,a); va_end(a); return r;
 }
@@ -49,6 +51,7 @@ static int32_t g_lowLatency = 0, g_jit = 0, g_softcap = 0, g_tear = 0, g_advShow
 #define FPSVITA_ADV_LOWLAT (1 << 0)
 #define FPSVITA_ADV_JIT    (1 << 1)
 #define FPSVITA_ADV_TEAR   (1 << 2)
+#define FPSVITA_ADV_AUTO   (1 << 3)
 
 /* Minimal stand-in for the real class: same member names/types. */
 struct Impose {
@@ -64,7 +67,7 @@ struct Impose {
 
 /* companion side */
 namespace comp {
-typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; } HelperConfig;
+typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int pg_read; } HelperConfig;
 #include "comp_io.inc"
 }
 
@@ -124,6 +127,25 @@ int main(){
     { Impose o=mk("PCSB00069",3,0,1); o.SavePerGame(); }
     expect("file untouched when it cannot be fully read", strlen(get())==big);
     printf("    (file is %zu B, buffer is %d B)\n", big, FPSVITA_STATE_BUF);
+    { /* A save may not produce a file the reader then refuses (BUF - 1 bytes). */
+      const char *line = "PCSB00069=3,lowlat=0,antilag=0,limiter=0,tearing=0\n";
+      for (int total = FPSVITA_STATE_BUF - 3; total <= FPSVITA_STATE_BUF - 1; total++) {
+        std::string s;
+        int fill = total - (int)strlen(line);
+        while (fill - (int)s.size() > 40) { char l[32]; snprintf(l,sizeof l,"PCSX%05d=1\n",(int)s.size()); s+=l; }
+        int pad = fill - (int)s.size() - 4;
+        s += "zz="; s += std::string(pad, 'x'); s += "\n";
+        put(s.c_str());
+        { Impose o=mk("PCSB00069",3,0,1); o.SavePerGame(); }
+        size_t after = strlen(get());
+        { Impose o=mk("PCSB00069",2,0,1); o.SavePerGame(); }
+        bool readable = strstr(get(),"PCSB00069=2,")!=NULL;
+        char what[80];
+        snprintf(what,sizeof what,"save to %d B: %s", total,
+                 total <= FPSVITA_STATE_BUF - 2 ? "written, still saveable" : "refused");
+        expect(what, total <= FPSVITA_STATE_BUF - 2 ? (after==(size_t)total && readable)
+                                                    : (after==(size_t)fill && !readable));
+      } }
 
     printf("== 5. Helper reads back what the shell wrote ==\n");
     putcfg("limit=2\nvsync=auto\nlowlat=1\n");
@@ -134,7 +156,7 @@ int main(){
     expect("lowlat read = 1", c.lowlatency==1);
     expect("global limit read = 2", c.interval==2);
     expect("vsync=auto -> autodetect, no forced vsync", c.autodetect==1 && c.inject==0);
-    expect("antilag/limiter absent -> 0", c.jit==0 && c.softcap==0);
+    expect("antilag absent -> auto, limiter absent -> 0", c.jit==2 && c.softcap==0);
     expect("other override read = 1", RGC("PCSE00411")==1);
     expect("absent title -> NO_PERGAME", RGC("PCSZ99999")==-99);
     expect("global key not seen as a titleid", RGC("limit")==-99);
@@ -144,12 +166,33 @@ int main(){
     putcfg("vsync=0\n");
     expect("vsync=0 -> forced off", RGC("PCSE00411")==1 && c.inject==0 && c.autodetect==0);
     expect("no per-game options -> -1", c.pg_ll==-1 && c.pg_jit==-1 && c.pg_sc==-1 && c.pg_tear==-1);
-    put("PCSE00411=2,lowlat=1,antilag=0,limiter=45\nPCSB00069=3\n");
+    put("PCSE00411=2,lowlat=1,antilag=0,limiter=45,read=peek\nPCSB00069=3\n");
     expect("per-game options read", RGC("PCSE00411")==2 && c.pg_ll==1 && c.pg_jit==0 && c.pg_sc==45);
+    expect("per-game read=peek read", c.pg_read==1);
     expect("plain line unaffected", RGC("PCSB00069")==3 && c.pg_ll==-1);
+    put("PCSE00411=1,read=peek\n");
+    { Impose o=mk("PCSE00411",1,0,1); o.SavePerGame(); }
+    expect("Save keeps read=peek", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek\n")!=NULL);
+    put("PCSB00069=3\nPCSE00411=1,read=peek\n");
+    expect("titleReadsPeek finds the title's read=peek", titleReadsPeek("PCSE00411"));
+    expect("and not another title's", !titleReadsPeek("PCSB00069") && !titleReadsPeek("PCSZ99999"));
     { Impose o=mk("PCSE00411",1,0,1); o.advFlags=FPSVITA_ADV_JIT|FPSVITA_ADV_TEAR; o.softcap=30; o.SavePerGame(); }
-    expect("Save writes the options", strstr(get(),"PCSE00411=1,lowlat=0,antilag=1,limiter=30,tearing=1\n")!=NULL);
-    expect("and the helper reads them back", RGC("PCSE00411")==1 && c.pg_ll==0 && c.pg_jit==1 && c.pg_sc==30 && c.pg_tear==1);
+    expect("Save writes the options", strstr(get(),"PCSE00411=1,lowlat=0,antilag=1,limiter=30,tearing=1,read=peek\n")!=NULL);
+    expect("and the helper reads them back", RGC("PCSE00411")==1 && c.pg_ll==0 && c.pg_jit==1 && c.pg_sc==30 && c.pg_tear==1 && c.pg_read==1);
+    putcfg("antilag=auto\n");
+    expect("antilag=auto read as 2", RGC("PCSE00411")==1 && c.jit==2);
+    put("PCSE00411=1,antilag=auto\n");
+    expect("per-game auto read", RGC("PCSE00411")==1 && c.pg_jit==2);
+    { Impose o=mk("PCSE00411",1,0,1); o.advFlags=FPSVITA_ADV_AUTO; o.softcap=0; o.SavePerGame(); }
+    expect("Save writes auto", strstr(get(),"PCSE00411=1,lowlat=0,antilag=auto,limiter=0,tearing=0\n")!=NULL);
+    g_jit = 2;
+    { Impose o=mk("",2,0,1); o.PersistState(); }
+    expect("config writes antilag=auto", strstr(getcfg(),"antilag=auto\n")!=NULL);
+    g_jit = 0;
+    putcfg("limit=2\nvsync=auto\nantilag=auto\n");
+    int32_t iv=-9, inj=-9, ad=-9, hud=-9, pos=-9;
+    expect("shell readGlobals succeeds", readGlobals(&iv,&inj,&ad,&hud,&pos));
+    expect("shell reads antilag=auto as 2", g_jit==2 && iv==2 && ad==1);
 
     printf("== 6. No config.txt: defaults, and nothing is read from state.txt ==\n");
     if(system("rm -f statedir/config.txt")){}

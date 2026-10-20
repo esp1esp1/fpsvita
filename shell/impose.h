@@ -52,6 +52,7 @@ public:
 private:
 
 	void UpdateModeLabel();
+	void UpdateWarning();
 	void UpdateInjectState();
 	void UpdateHudLabels();
 	void UpdateSoftcapLabel();
@@ -66,6 +67,7 @@ private:
 	paf::ui::Box *root;
 
 	paf::ui::Text *modeText;
+	paf::ui::Text *warnText;
 	paf::ui::CheckBox *injectBox;
 	paf::ui::Text *injectLabel;
 	paf::ui::Widget *saveButton;
@@ -83,6 +85,7 @@ private:
 	int32_t softcap;
 	char titleid[FPSVITA_TITLEID_LEN];
 	bool hasGame;
+	bool readPeek;     /* the title's state.txt line has read=peek */
 	bool valid;
 	bool registered;   /* Update was added to MainThreadCallList */
 };

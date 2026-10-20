@@ -1,6 +1,7 @@
 # fpsvita
 
-Frame-rate limits, anti-lag and tearing for PS Vita games, controlled live from the quick menu.
+Lower input latency for PS Vita games, an overlay that measures it, and frame-rate limits,
+all controlled live from the quick menu.
 
 <p align="center">
   <img src="docs/images/quick-menu.jpg" width="49%" alt="The fpsvita rows in the quick menu: FPS limit with Save, HUD mode and corner, Latency options" />
@@ -9,23 +10,29 @@ Frame-rate limits, anti-lag and tearing for PS Vita games, controlled live from 
 
 **What it does**
 
-- **Frame limit on the fly.** Default, 60, 30, 20, Uncapped or Tearing, switched while the game
-  runs. Cap a stuttery 60 fps game to a solid 30, or let a 30 fps game run at 60 if it can.
-  This only works on games that keep their own time; many Vita games do not, and run too fast
-  or in slow motion at any rate but their own. The
-  [compatibility list](docs/compatibility-list.md) has the known good and the known bad.
-- **Per-game profiles.** Save stores the whole row for that title; it is applied at every later
-  launch and the global defaults come back when the game exits.
 - **Anti-lag.** Most games read the controller a hair before the new sample arrives and play on
   input a whole frame old. Anti-lag fixes that: 11 to 24 ms less input-to-screen latency on
-  most of the titles measured, with no change in frame rate. It cannot help a game that
-  reads the controller mid-frame; the guide lists both kinds. It works at the game's own rate,
-  so it is the part to try on any game.
+  most of the titles measured, with no change in frame rate and no change in game speed. It
+  is on by default in `auto` mode (fresh poll only); untick the box and tick it again for the
+  full version that also sleeps whole vblanks at a 30 or 20 limit. It works at the game's own
+  rate, so it can be tried on any game, including the many whose frame rate cannot be changed.
+  Seven titles have before-and-after numbers so far; how many others gain is not yet known,
+  which is what the overlay's LAST row is for. It cannot help a game that reads the controller
+  mid-frame; the guide lists both kinds.
+- **Overlay.** Frame rate, frametime, CPU time, and the number that matters: input-to-screen
+  latency, per frame, with a before-and-after of the last thing you toggled and a tip for what
+  to try next. Mini (two lines) or Full (a box), in any corner. The only way on the Vita to
+  see why a game feels the way it does.
 - **Low latency, Limiter, Tearing.** One frame less in the display queue; a limiter for any
   rate (40, 45, 50) without vsync; and PC-style vsync-off tearing for the lowest latency the
   hardware allows.
-- **Overlay.** Frame rate, frametime, CPU time, and the number that matters: input-to-screen
-  latency, per frame. Mini (two lines) or Full (a box), in any corner.
+- **Frame limit on the fly.** Default, 60, 30, 20, Uncapped or Tearing, switched while the game
+  runs. Cap a stuttery 60 fps game to a solid 30, or let a 30 fps game run at 60 if it can.
+  Be clear about the limit of this: it only works on games that keep their own time, and many
+  Vita games do not, running too fast or in slow motion at any rate but their own. The
+  [compatibility list](docs/compatibility-list.md) has the known good and the known bad.
+- **Per-game profiles.** Save stores the whole row for that title; it is applied at every later
+  launch and the global defaults come back when the game exits.
 - **Lite mode.** One plugin and a text file, if you don't want the menu.
 
 ## Install
@@ -33,7 +40,7 @@ Frame-rate limits, anti-lag and tearing for PS Vita games, controlled live from 
 You need a Vita running HENkaku or ensō (so taiHEN is loading plugins) and a way to copy
 files onto it, such as VitaShell's FTP or USB mode.
 
-1. Download `fpsvita-v0.1.1.zip` from the
+1. Download `fpsvita-v0.2.0.zip` from the
    [Releases](https://github.com/esp1esp1/fpsvita/releases) page and unzip it. Inside are a
    `ur0` folder, a `lite` folder and the docs.
 2. Copy the **contents** of the `ur0` folder onto the Vita's `ur0:` partition, keeping the
@@ -78,28 +85,33 @@ them back later.
 
 ## Using it
 
+**Start with the overlay.** Turn the HUD to Full and read the LAST row: it shows the
+input-to-screen time before and after, on the game you are playing. Antilag is already on in
+`auto` mode (fresh poll only); to add the whole-vblank sleep, turn it off and on again, or set
+`antilag=1`. That works on any game and changes nothing else.
+
 **Read [docs/GUIDE.md](docs/GUIDE.md) before you change a game's rate.** It explains what each
 mode and option does, what it costs, and what to do when a game misbehaves. The short version:
 many Vita games, PS2 and PS3 remasters and Koei Tecmo titles especially, advance their world a
 fixed step per frame. On those, a higher limit runs the game too fast and a lower one plays as
-slow motion. Default is always safe. Check the
-[compatibility list](docs/compatibility-list.md) before you change a game's rate.
+slow motion, and nothing done from outside the game can change that. Default is always safe.
+Check the [compatibility list](docs/compatibility-list.md) before you change a game's rate.
 
 **Do not run Framecapper alongside fpsvita.** Both hook the same display waits, and the result
-is undefined. VitaGrafix coexists; its FPS patches show up as the `(game ..)` value. Other plugin
-combinations are untested.
+is undefined. Frame-rate patches from other plugins coexist and show up as the `(og:..)`
+value. Other plugin combinations are untested.
 
 Open the quick menu (hold PS) with a game running and scroll down:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ ▣ FPS:     [<]  30fps (game 60)  [>]                 [Save] │
+│ ▣ FPS:     [<]  30fps (og:60)  [>]                  [Save] │
 │   HUD:     [<]  Mini  [>]                 Corner: [<] TL [>] │
 │   Latency: [ ] Lowlat  [ ] Antilag       Limiter: [<] off [>] │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**FPS row.** Left and right cycle the limit. `(game 60)` is the rate the game asked for by
+**FPS row.** Left and right cycle the limit. `(og:60)` is the rate the game asked for by
 itself, so you can see what you are changing.
 
 | Limit | What you get |
@@ -117,12 +129,13 @@ defaults for everything.
 
 **HUD row.** Overlay off, Mini or Full, and which corner.
 
-**Latency row.** Antilag is the one to try first on everything. Lowlat helps titles that keep
-their display queue full (the overlay's QUEUE row near a full frame says so) and applies from
-the game's next launch. Limiter holds Uncapped games to a chosen rate without vsync, for 40 or
-45 fps or for games that cannot be limited the normal way. It changes the rate too, so the
-same caveat applies. The guide has the reasoning behind
-each, with numbers.
+**Latency row.** Antilag is on by default in `auto` mode (fresh poll only); ticking it off and
+on again enables the full version with the whole-vblank sleep. To get back to auto, set
+`antilag=auto` in `config.txt` (or on the title's `state.txt` line) by hand. Lowlat helps
+titles that keep their display queue full (the overlay's QUEUE row near a full frame says so)
+and applies from the game's next launch. Limiter holds Uncapped games to a chosen rate without
+vsync, for 40, 45 or 50 fps or for games that cannot be limited the normal way. It changes the
+rate too, so the same caveat applies. The guide has the reasoning behind each, with numbers.
 
 **Vsync checkbox.** Appears only when `config.txt` has `vsync=0` or `vsync=1` instead of the
 default `vsync=auto`. With auto, forced vsync engages by itself on the few games that never
@@ -130,11 +143,14 @@ wait for the screen. The checkbox is a global setting, not part of a title's pro
 
 ## Overlay
 
-Mini is two green lines: `30 FPS  LIMIT 30 / GAME 60`, then whatever is active: `VSYNC`,
-`LOW LAT`, `ANTI-LAG 16.7 ms`, `LIMITER 40`. Full is a box with a row each for FPS and
+Mini is two green lines: `30 FPS  LIMIT 30 / OG:60`, then whatever is active, in short
+form: `VSYNC`, `LL` (Lowlat on; `LL?` until the next launch), `AL` (Antilag auto) or `AL+`
+(full), `LIM 40`. Full is a box with a row each for FPS and
 frametime, LIMIT, CPU, INPUT (the frame's newest controller sample to its flip, which is
-input-to-screen minus the panel itself), QUEUE (submit to flip), ANTI-LAG, LOW LAT, LIMITER and
-TITLE. It costs nothing while off. Every row is explained in the guide.
+input-to-screen minus the panel itself), QUEUE (submit to flip), ANTI-LAG, LOW LAT, LIMITER,
+TIP (what the readings say is worth trying next), LAST (INPUT before and after the last
+toggle, the real evidence) and TITLE. It costs nothing while off. Every row is explained in the
+guide.
 
 ## Lite mode
 
@@ -175,4 +191,3 @@ GPL-3.0, see `LICENSE`. Third-party components and their licences are in
 ## Vibecoding notice
 
 fpsvita was vibecoded with care. I'm not a developer, but I'm also not clueless. This software will be kept maintained in the future, and I'll respond to any issues.
-

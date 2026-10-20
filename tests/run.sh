@@ -27,6 +27,9 @@ CXX=${CXX:-g++}
 SAN="-fsanitize=address,undefined"
 rc=0
 
+printf '\n\033[1m--- compat table ---\033[0m\n'
+if ! python3 "$ROOT/tools/gen_compat.py" --check; then rc=1; fi
+
 extract_range() {   # file, start-regex -> stdout, up to the next line that is exactly "}"
     local f="$1" re="$2"
     local a e
@@ -51,7 +54,7 @@ run_one() {   # name
 # --- statetest: state.txt read/write ---
 {
     a=$(grep -n '^static char s_readBuf' "$ROOT/shell/impose.cpp" | cut -d: -f1)
-    b=$(grep -n '^void Impose::SavePerGame' "$ROOT/shell/impose.cpp" | cut -d: -f1)
+    b=$(grep -n '^bool readGlobals' "$ROOT/shell/impose.cpp" | cut -d: -f1)
     e=$(awk -v b="$b" 'NR>=b && /^}$/{print NR; exit}' "$ROOT/shell/impose.cpp")
     if [ -z "$a" ] || [ -z "$e" ]; then echo "EXTRACT FAILED: shell state IO" >&2; exit 1; fi
     sed -n "${a},${e}p" "$ROOT/shell/impose.cpp"

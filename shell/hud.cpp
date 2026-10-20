@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <psp2/kernel/processmgr.h>
 #include "hud.h"
+#include "compat.h"
 
 using namespace paf;
 
@@ -25,9 +26,11 @@ extern "C" ui::Scene *pafPluginPageOpen(Plugin *self, const IDParam &id, const v
 #define FPSVITA_HUD_DRAW_PRIORITY 6        /* PSVshellPlus uses 6: above the game */
 
 #define FPSVITA_HUD_POLL_US 200000
-#define FPSVITA_HUD_ROWS 9
+#define FPSVITA_HUD_ROWS 11
 #define FPSVITA_HUD_WIDTH 350.0f           /* same as PSVshellPlus's box */
-#define FPSVITA_HUD_HEIGHT_FULL 250.0f     /* 9 rows of 26 px */
+#define FPSVITA_HUD_HEIGHT_FULL 302.0f     /* 11 rows of 26 px */
+#define FPSVITA_HUD_SETTLE_US 3000000      /* the helper's EMAs after a launch or a toggle */
+#define FPSVITA_HUD_TIP_HOLD_US 5000000    /* a new tip must hold this long before it replaces the shown one */
 #define FPSVITA_HUD_HEIGHT_MINI 60.0f
 #define FPSVITA_SCREEN_W 960.0f
 #define FPSVITA_SCREEN_H 544.0f
@@ -46,23 +49,56 @@ static bool s_registered = false;
 static bool s_openFailed = false;   /* RCO/shell mismatch: do not try again, do not leak pages */
 static bool s_visible = true;       /* a freshly opened template is visible */
 static uint32_t s_lastPoll = 0;
+static bool     s_redraw = false;   /* mode or corner changed: draw on the next poll */
 static uint32_t s_lastSeq = 0;
 static int32_t  s_lastInterval = 0x7fffffff;
 static int32_t  s_lastNative = -1;
 static int32_t  s_lastAdv = -1, s_lastSoftcap = -1;
+static uint32_t s_lastTitle[3];
+/* 64-bit process time: 32-bit microseconds wrap every 71.6 minutes, which
+ * would read as a fresh toggle or launch. */
+static uint64_t s_now;              /* process time at the current poll */
+static uint64_t s_settleFrom;       /* tips wait for the EMAs after a launch or a toggle */
+static uint64_t s_launchTime;       /* the helper's profile push lands just after the title id */
+static bool     s_readPeek;         /* this title's state.txt line has read=peek */
+
+/* Before/after readout: the INPUT and FPS values just before the last
+ * toggle, shown against the current ones once they have settled. A Lowlat
+ * toggle applies at the title's next launch, so its "before" is held until
+ * the same title comes back. */
+enum { CHG_NONE, CHG_LIMIT, CHG_LOWLAT, CHG_ANTILAG, CHG_LIMITER, CHG_TEAR };
+static int      s_chg = CHG_NONE;
+static bool     s_chgArmed;         /* in effect: the settle timer is running */
+static bool     s_chgCheck;         /* Lowlat: the relaunch happened, confirm it took once the profile is in */
+static bool     s_chgUnsaved;       /* Lowlat: relaunched without the toggle (Save was not pressed) */
+static int      s_chgTarget;        /* Lowlat: the state the toggle asked for */
+static uint64_t s_chgTime;
+static uint32_t s_chgInput, s_chgFps, s_chgTitle[3];
+static uint32_t s_prevInput, s_prevFps;   /* slow averages of what was shown: the "before" of the next toggle */
+
+/* The tip rules sit on thresholds the averages wander across at every scene
+ * change; the shown tip only follows a candidate that has held for a while. */
+enum { TIP_WAIT, TIP_NONE, TIP_NOTHELD, TIP_ANTILAG, TIP_LOWLAT, TIP_COMPAT };
+static int      s_tipShown = TIP_WAIT, s_tipCand = TIP_WAIT;
+static uint64_t s_tipCandSince;
+static const wchar_t *s_tipCompat = L"";   /* the shown compat tip, kept through the hold */
 
 /* Row names borrow PC terms (PresentMon "CPU busy", Reflex-style latency):
  * INPUT is the frame's own newest controller sample to its flip, QUEUE its
  * submit-to-flip, both measured per frame by the helper. */
-enum { ROW_FPS, ROW_LIMIT, ROW_CPU, ROW_INPUT, ROW_QUEUE, ROW_ANTILAG, ROW_LOWLAT, ROW_LIMITER, ROW_TITLE };
+enum { ROW_FPS, ROW_LIMIT, ROW_CPU, ROW_INPUT, ROW_QUEUE, ROW_ANTILAG, ROW_LOWLAT, ROW_LIMITER,
+       ROW_TIP, ROW_CHANGE, ROW_TITLE };
 static const wchar_t *const s_labels[FPSVITA_HUD_ROWS] = {
-	L"FPS:", L"LIMIT:", L"CPU:", L"INPUT:", L"QUEUE:", L"ANTI-LAG:", L"LOW LAT:", L"LIMITER:", L"TITLE:"
+	L"FPS:", L"LIMIT:", L"CPU:", L"INPUT:", L"QUEUE:", L"ANTI-LAG:", L"LOW LAT:", L"LIMITER:",
+	L"TIP:", L"LAST:", L"TITLE:"
 };
 
 static ui::Text *findText(const char *id)
 {
 	return (ui::Text *)s_page->FindChild(IDParam(id), 0);
 }
+
+bool titleReadsPeek(const char *titleid);   /* impose.cpp */
 
 bool Hud::Open()
 {
@@ -177,9 +213,9 @@ void Hud::Apply()
 	}
 	SetPosition();
 
-	/* Force a redraw on the next poll. */
-	s_lastSeq = 0;
-	s_lastInterval = 0x7fffffff;
+	/* Redraw on the next poll. Not by faking a changed limit: the toggle
+	 * detection would record that as one. */
+	s_redraw = true;
 	s_lastPoll = 0;
 
 	if (!s_registered) {
@@ -199,10 +235,10 @@ void Hud::Shutdown()
 
 void Hud::Update(void *arg)
 {
-	uint32_t now = sceKernelGetProcessTimeLow();
-	if (now - s_lastPoll < FPSVITA_HUD_POLL_US)
+	uint64_t now = sceKernelGetProcessTimeWide();
+	if ((uint32_t)now - s_lastPoll < FPSVITA_HUD_POLL_US)
 		return;
-	s_lastPoll = now;
+	s_lastPoll = (uint32_t)now;
 
 	FpsvitaState st;
 	sce_paf_memset(&st, 0, sizeof(st));
@@ -211,13 +247,72 @@ void Hud::Update(void *arg)
 	/* The kernel clears the title id when the owning process exits. */
 	bool game = (st.titleid[0] & 0xFFu) != 0;
 	SetVisible(game);
-	if (!game)
+	if (!game) {
+		s_lastTitle[0] = 0;   /* a relaunch of the same title is a launch, not a toggle */
 		return;
+	}
+	s_now = now;
 
-	if (st.stats.seq == s_lastSeq && st.interval == s_lastInterval
+	bool sameTitle = st.titleid[0] == s_lastTitle[0] && st.titleid[1] == s_lastTitle[1]
+	              && st.titleid[2] == s_lastTitle[2];
+	if (!sameTitle) {
+		/* A launch: EMAs start over. A pending Lowlat readout for this very
+		 * title is what the relaunch was for; anything else is stale. */
+		sce_paf_memcpy(s_lastTitle, st.titleid, sizeof(s_lastTitle));
+		s_settleFrom = s_launchTime = now;
+		s_tipShown = s_tipCand = TIP_WAIT;
+		s_prevInput = s_prevFps = 0;
+		s_readPeek = titleReadsPeek((const char *)st.titleid);
+		if (s_chg == CHG_LOWLAT && !s_chgArmed && st.titleid[0] == s_chgTitle[0]
+		    && st.titleid[1] == s_chgTitle[1] && st.titleid[2] == s_chgTitle[2]) {
+			s_chgCheck = true;   /* decided below, once the helper's profile push is in */
+		} else {
+			s_chg = CHG_NONE;
+		}
+	} else if (now - s_launchTime >= 1000000) {
+		if (s_chgCheck) {
+			/* A Lowlat toggle only survives the relaunch through Save. */
+			s_chgCheck = false;
+			if (((st.adv_flags & FPSVITA_ADV_LOWLAT) != 0) == s_chgTarget) {
+				s_chgArmed = true;
+				s_chgUnsaved = false;
+				s_chgTime = now;
+			} else {
+				s_chgUnsaved = true;
+			}
+		}
+		int chg = CHG_NONE;
+		if (st.interval != s_lastInterval)
+			chg = CHG_LIMIT;
+		else if (st.softcap != s_lastSoftcap)
+			chg = CHG_LIMITER;
+		else if ((st.adv_flags ^ s_lastAdv) & FPSVITA_ADV_LOWLAT)
+			chg = CHG_LOWLAT;
+		else if ((st.adv_flags ^ s_lastAdv) & (FPSVITA_ADV_JIT | FPSVITA_ADV_AUTO))
+			chg = CHG_ANTILAG;
+		else if ((st.adv_flags ^ s_lastAdv) & FPSVITA_ADV_TEAR)
+			chg = CHG_TEAR;
+		/* A toggle is a change seen while the game was presenting before and
+		 * after it; anything around a load or a teardown is not one. */
+		if (chg != CHG_NONE && s_prevFps && st.stats.fps_x10) {
+			s_chg = chg;
+			s_chgArmed = chg != CHG_LOWLAT;   /* Lowlat waits for the relaunch */
+			s_chgCheck = s_chgUnsaved = false;
+			s_chgTarget = (st.adv_flags & FPSVITA_ADV_LOWLAT) != 0;
+			s_chgTime = now;
+			s_settleFrom = now;
+			s_tipShown = s_tipCand = TIP_WAIT;
+			s_chgInput = s_prevInput;
+			s_chgFps = s_prevFps;
+			sce_paf_memcpy(s_chgTitle, st.titleid, sizeof(s_chgTitle));
+		}
+	}
+
+	if (!s_redraw && st.stats.seq == s_lastSeq && st.interval == s_lastInterval
 	    && st.native_interval == s_lastNative && st.adv_flags == s_lastAdv
 	    && st.softcap == s_lastSoftcap)
 		return;
+	s_redraw = false;
 	s_lastSeq = st.stats.seq;
 	s_lastInterval = st.interval;
 	s_lastNative = st.native_interval;
@@ -267,6 +362,7 @@ void Hud::Refresh(const FpsvitaState &st)
 	int onLL = (s.flags & FPSVITA_STATF_LOWLATENCY) != 0;      /* clamped by the helper */
 	int natLL = (s.flags & FPSVITA_STATF_LOWLAT_NATIVE) != 0;  /* the title's own setting */
 	int antilag = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
+	int antilagAuto = (st.adv_flags & FPSVITA_ADV_AUTO) != 0;
 	int reqTear = (st.adv_flags & FPSVITA_ADV_TEAR) != 0 && st.interval == FPSVITA_INTERVAL_UNCAPPED;
 	int onTear = (s.flags & FPSVITA_STATF_TEAR) != 0;
 	int haveWork = (s.flags & FPSVITA_STATF_ADDENTRY) != 0;
@@ -294,29 +390,26 @@ void Hud::Refresh(const FpsvitaState &st)
 		else
 			pos = appendW(buf, pos, L"LIMIT %d", capfps);
 		if (nat > 0)
-			pos = appendW(buf, pos, L" / GAME %d", nat);
+			pos = appendW(buf, pos, L" / OG:%d", nat);
 		textSet(s_mini[0], buf);
 
+		/* Short forms of what is active, so the worst case ("VSYNC  LL?  AL+
+		 * LIM 50") fits the box: the full words run off the screen in the
+		 * right-hand corners. Full mode has the detail. */
 		buf[0] = L'\0';
 		pos = 0;
 		if (s.flags & FPSVITA_STATF_INJECT)
 			pos = appendW(buf, pos, L"VSYNC  ");
-		if (natLL)
-			pos = appendW(buf, pos, L"LOW LAT (GAME)  ");
-		else if (reqLL && onLL)
-			pos = appendW(buf, pos, L"LOW LAT  ");
+		if (natLL || onLL)
+			pos = appendW(buf, pos, L"LL  ");
 		else if (reqLL)
-			pos = appendW(buf, pos, L"LOW LAT PENDING  ");
-		else if (onLL)
-			pos = appendW(buf, pos, L"LOW LAT UNTIL RESTART  ");
-		if (antilag) {
-			if (s.jit_slack_us)
-				pos = appendW(buf, pos, L"ANTI-LAG %u.%u ms  ", MS_INT(s.jit_slack_us), MS_TENTH(s.jit_slack_us));
-			else
-				pos = appendW(buf, pos, L"ANTI-LAG  ");
-		}
+			pos = appendW(buf, pos, L"LL?  ");   /* requested, applies at the next launch */
+		if (antilag)
+			pos = appendW(buf, pos, L"AL+  ");
+		else if (antilagAuto)
+			pos = appendW(buf, pos, L"AL  ");
 		if (st.softcap > 0 && st.interval == FPSVITA_INTERVAL_UNCAPPED)
-			pos = appendW(buf, pos, L"LIMITER %d  ", (int)st.softcap);
+			pos = appendW(buf, pos, L"LIM %d  ", (int)st.softcap);
 		textSet(s_mini[1], buf);
 		return;
 	}
@@ -327,9 +420,9 @@ void Hud::Refresh(const FpsvitaState &st)
 		setRow(ROW_FPS, L"%u.%u", fps_i, fps_t);
 
 	if (mode)
-		setRow(ROW_LIMIT, nat > 0 ? L"%ls / GAME %d" : L"%ls", mode, nat);
+		setRow(ROW_LIMIT, nat > 0 ? L"%ls / OG:%d" : L"%ls", mode, nat);
 	else
-		setRow(ROW_LIMIT, nat > 0 ? L"%d / GAME %d" : L"%d FPS", capfps, nat);
+		setRow(ROW_LIMIT, nat > 0 ? L"%d / OG:%d" : L"%d FPS", capfps, nat);
 
 	if (haveWork)
 		setRow(ROW_CPU, L"%u.%u ms", MS_INT(s.work_us), MS_TENTH(s.work_us));
@@ -346,7 +439,9 @@ void Hud::Refresh(const FpsvitaState &st)
 
 	/* Anti-lag: the fresh poll is always at work once enabled; the value is
 	 * the whole-vblank sleep in force and the frames it has cost. */
-	if (!antilag)
+	if (antilagAuto)
+		setRow(ROW_ANTILAG, L"AUTO");
+	else if (!antilag)
 		setRow(ROW_ANTILAG, L"OFF");
 	else if (s.jit_slack_us)
 		setRow(ROW_ANTILAG, L"%u.%u ms / %u", MS_INT(s.jit_slack_us), MS_TENTH(s.jit_slack_us), (unsigned)s.jit_missed);
@@ -372,6 +467,87 @@ void Hud::Refresh(const FpsvitaState &st)
 		setRow(ROW_LIMITER, L"%d FPS (NEEDS UNCAPPED)", (int)st.softcap);
 	else
 		setRow(ROW_LIMITER, L"OFF");
+
+	/* Tip: what the readings say is worth trying, first match wins. The
+	 * thresholds come from the 2026-10 device batches
+	 * (docs/latency-measurements.md): Antilag paid off wherever the sample
+	 * was a frame old or the frame sat a vblank in the queue (MGS2 had a
+	 * fresh sample and still gained the most, from the queue); Lowlat only
+	 * where the queue held a frame; a limit the game misses in a tenth of
+	 * its frames is a limit it cannot hold. */
+	int capfps_tip = fpsvitaIntervalToFps(st.interval);
+	bool settled = s_now - s_settleFrom >= FPSVITA_HUD_SETTLE_US;
+	/* A limit the game runs a tenth under. (A rolling double-period count was
+	 * tried and dropped: one cutscene load tripped it for the next 300 frames.) */
+	bool notHeld = capfps_tip > 0 && s.fps_x10 < (uint32_t)capfps_tip * 9u;
+	/* Antilag's whole-vblank sleep only fits when the CPU work leaves a
+	 * vblank of headroom after its margins (2.5 ms each for the margin and
+	 * the fresh poll); MGS2 gameplay at 12 to 14 ms of work gained nothing. */
+	bool sleepFits = haveWork && (capfps_tip == 30 || capfps_tip == 20)
+	              && s.work_us + 5000u + FPSVITA_VBLANK_US <= (uint32_t)FPSVITA_VBLANK_US * (uint32_t)st.interval;
+	const wchar_t *compat = fpsvitaCompatWarn(fpsvitaCompatFlags((const char *)st.titleid),
+	                                          st.interval, s_readPeek);
+	if (compat)
+		s_tipCompat = compat;
+	int cand;
+	if (!settled)
+		cand = TIP_WAIT;
+	else if (notHeld)
+		cand = TIP_NOTHELD;
+	else if ((!antilag && !antilagAuto && s.sample_age_us >= 10000u)
+	         || (!antilag && sleepFits && s.queue_us >= FPSVITA_VBLANK_US))
+		cand = TIP_ANTILAG;
+	else if (!reqLL && !natLL && !onLL && s.frame_us && s.queue_us * 10u >= s.frame_us * 8u)
+		cand = TIP_LOWLAT;
+	else if (compat)
+		cand = TIP_COMPAT;
+	else
+		cand = TIP_NONE;
+	if (cand != s_tipCand) {
+		s_tipCand = cand;
+		s_tipCandSince = s_now;
+	}
+	if (s_tipShown == TIP_WAIT || cand == TIP_WAIT || s_now - s_tipCandSince >= FPSVITA_HUD_TIP_HOLD_US)
+		s_tipShown = cand;
+	const wchar_t *tip = L"...";
+	switch (s_tipShown) {
+	case TIP_NONE:    tip = L"NONE"; break;
+	case TIP_NOTHELD: tip = capfps_tip == 60 ? L"60 NOT HELD, TRY 30"
+	                      : capfps_tip == 30 ? L"30 NOT HELD, TRY 20" : L"20 NOT HELD"; break;
+	case TIP_ANTILAG: tip = L"TRY FULL ANTI-LAG"; break;
+	case TIP_LOWLAT:  tip = L"TRY LOW LAT"; break;
+	case TIP_COMPAT:  tip = s_tipCompat; break;
+	default: break;
+	}
+	setRow(ROW_TIP, L"%ls", tip);
+
+	/* Last toggle: INPUT before > after, the real evidence. The value column
+	 * next to this label holds about 20 characters. */
+	static const wchar_t *const chgName[] = { L"", L"LIMIT", L"LOW LAT", L"ANTI-LAG", L"LIMITER", L"TEARING" };
+	if (s_chg == CHG_NONE)
+		setRow(ROW_CHANGE, L"-");
+	else if (!s_chgArmed)
+		setRow(ROW_CHANGE, s_chgUnsaved ? L"LOW LAT: NOT SAVED" : L"LOW LAT: RESTART");
+	else if (s_now - s_chgTime < FPSVITA_HUD_SETTLE_US)
+		setRow(ROW_CHANGE, L"%ls ...", chgName[s_chg]);
+	else if (s_chgInput && s.input_us) {
+		unsigned before = MS_INT(s_chgInput + 500), after = MS_INT(s.input_us + 500);
+		int dfps = ((int)s.fps_x10 - (int)s_chgFps - 5) / 10;   /* a loss, rounded: never 0 here */
+		if (s_chgFps && s.fps_x10 * 20 < s_chgFps * 19)   /* cost side: lost over 5 percent */
+			setRow(ROW_CHANGE, L"%ls %u>%u %dFPS", chgName[s_chg], before, after, dfps);
+		else
+			setRow(ROW_CHANGE, L"%ls %u>%u MS", chgName[s_chg], before, after);
+	} else if (s_chgFps && s.fps_x10)
+		setRow(ROW_CHANGE, L"%ls %u>%u FPS", chgName[s_chg], (unsigned)(s_chgFps + 5) / 10, (unsigned)(s.fps_x10 + 5) / 10);
+	else
+		setRow(ROW_CHANGE, L"%ls -", chgName[s_chg]);
+
+	/* Slow averages (about 2 s at four pushes a second), so a menu opened
+	 * on a scene transition does not fix the "before" to one odd frame. */
+	if (s.input_us)
+		s_prevInput = s_prevInput ? s_prevInput + ((int32_t)s.input_us - (int32_t)s_prevInput) / 8 : s.input_us;
+	if (s.fps_x10)
+		s_prevFps = s_prevFps ? s_prevFps + ((int32_t)s.fps_x10 - (int32_t)s_prevFps) / 8 : s.fps_x10;
 
 	setRow(ROW_TITLE, L"%ls", wtid);
 }

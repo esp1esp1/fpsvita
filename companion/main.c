@@ -84,6 +84,8 @@ enum {
 static SceUID          s_hookId[HOOK_COUNT];
 static tai_hook_ref_t  s_hookRef[HOOK_COUNT];
 
+#define logicWaitRet(r) (r)
+
 /* ------------------------------------------------------------------
  * Auto-detect state
  *
@@ -140,16 +142,18 @@ typedef struct HelperConfig {
 	int     inject;       /* "inject=", "autodetect=": seeded by the lite build only */
 	int     autodetect;
 	int     lowlatency;   /* "lowlatency=1" */
-	int     jit;          /* "jit=1" */
+	int     jit;          /* "antilag=0/1/auto": 2 means fresh poll only */
 	int     tear;         /* "tear=1": Uncapped flips IMMEDIATE through the kernel */
 	/* Per-game options on the title's line
 	 * ("TITLEID=2,lowlat=1,antilag=0,limiter=30,tearing=0"), -1 when the
 	 * line has none: the globals apply. */
 	int32_t pg_ll, pg_jit, pg_sc, pg_tear;
+	int     pg_read;      /* per-game "read=peek": blocking Read becomes Peek */
 } HelperConfig;
 
 /* Opt-in latency tweak, read from state.txt at launch (see readGameConfig) */
 static int s_lowLatency = 0;
+static int s_readPeek = 0;            /* per-game "read=peek": Read becomes Peek */
 static int s_lowLatencyApplied = 0;   /* the GXM queue is 1 deep because of us */
 static int s_lowLatencyNative = 0;    /* the title asked for 1 itself */
 static int32_t s_savedAdvFlags = 0, s_savedSoftcap = 0;   /* kernel values before this title */
@@ -343,14 +347,14 @@ static int sceDisplayWaitVblankStartMulti_patched(unsigned int interval)
 	detectNativeMulti(interval);
 	int32_t cur = fpsvitaGetInterval();
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_MULTI], interval);
+		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_MULTI], interval));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
-		return uncappedReturn(0);
+		return logicWaitRet(uncappedReturn(0));
 	/* Through our own import, not TAI_CONTINUE with a changed count: on
 	 * DOOM64EX1 the continuation returned 0x80290001 at once for count 2
 	 * while the direct call blocked for the expected two vblanks. The
 	 * Framecapper plugins do the same. */
-	return vblRet(sceDisplayWaitVblankStartMulti((unsigned int)cur));
+	return logicWaitRet(vblRet(sceDisplayWaitVblankStartMulti((unsigned int)cur)));
 }
 
 static int sceDisplayWaitVblankStart_patched(void)
@@ -359,10 +363,10 @@ static int sceDisplayWaitVblankStart_patched(void)
 	detectNativeNonMulti();
 	int32_t cur = fpsvitaGetInterval();
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK]);
+		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK]));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
-		return uncappedReturn(0);
-	return vblRet(sceDisplayWaitVblankStartMulti((unsigned int)cur));
+		return logicWaitRet(uncappedReturn(0));
+	return logicWaitRet(vblRet(sceDisplayWaitVblankStartMulti((unsigned int)cur)));
 }
 
 static int sceDisplayWaitVblankStartMultiCB_patched(unsigned int interval)
@@ -371,11 +375,11 @@ static int sceDisplayWaitVblankStartMultiCB_patched(unsigned int interval)
 	detectNativeMulti(interval);
 	int32_t cur = fpsvitaGetInterval();
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_MULTI_CB],
-		                    interval);
+		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_MULTI_CB],
+		                                interval));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
-		return uncappedReturn(1);
-	return vblRet(sceDisplayWaitVblankStartMultiCB((unsigned int)cur));
+		return logicWaitRet(uncappedReturn(1));
+	return logicWaitRet(vblRet(sceDisplayWaitVblankStartMultiCB((unsigned int)cur)));
 }
 
 static int sceDisplayWaitVblankStartCB_patched(void)
@@ -386,11 +390,11 @@ static int sceDisplayWaitVblankStartCB_patched(void)
 	int32_t cur = fpsvitaGetInterval();
 
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_CB]);
+		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_CB]));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
-		return uncappedReturn(1);
+		return logicWaitRet(uncappedReturn(1));
 
-	return vblRet(sceDisplayWaitVblankStartMultiCB((unsigned int)cur));
+	return logicWaitRet(vblRet(sceDisplayWaitVblankStartMultiCB((unsigned int)cur)));
 }
 
 static int sceDisplayWaitSetFrameBufMulti_patched(unsigned int interval)
@@ -399,26 +403,25 @@ static int sceDisplayWaitSetFrameBufMulti_patched(unsigned int interval)
 	detectNativeMulti(interval);
 	int32_t cur = fpsvitaGetInterval();
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_MULTI], interval);
+		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_MULTI], interval));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
-		return uncappedReturn(0);
+		return logicWaitRet(uncappedReturn(0));
 	/* Own import, not TAI_CONTINUE with a changed count (see the vblank hooks). */
-	return vblRet(sceDisplayWaitSetFrameBufMulti((unsigned int)cur));
+	return logicWaitRet(vblRet(sceDisplayWaitSetFrameBufMulti((unsigned int)cur)));
 }
 
 static int sceDisplayWaitSetFrameBuf_patched(void)
 {
 	noteVsyncWait();
 	detectNativeNonMulti();
-
 	int32_t cur = fpsvitaGetInterval();
 
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB]);
+		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB]));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
-		return uncappedReturn(0);
+		return logicWaitRet(uncappedReturn(0));
 
-	return vblRet(sceDisplayWaitSetFrameBufMulti((unsigned int)cur));
+	return logicWaitRet(vblRet(sceDisplayWaitSetFrameBufMulti((unsigned int)cur)));
 }
 
 static int sceDisplayWaitSetFrameBufMultiCB_patched(unsigned int interval)
@@ -427,11 +430,11 @@ static int sceDisplayWaitSetFrameBufMultiCB_patched(unsigned int interval)
 	detectNativeMulti(interval);
 	int32_t cur = fpsvitaGetInterval();
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_MULTI_CB],
-		                    interval);
+		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_MULTI_CB],
+		                                interval));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
-		return uncappedReturn(1);
-	return vblRet(sceDisplayWaitSetFrameBufMultiCB((unsigned int)cur));
+		return logicWaitRet(uncappedReturn(1));
+	return logicWaitRet(vblRet(sceDisplayWaitSetFrameBufMultiCB((unsigned int)cur)));
 }
 
 static int sceDisplayWaitSetFrameBufCB_patched(void)
@@ -442,11 +445,11 @@ static int sceDisplayWaitSetFrameBufCB_patched(void)
 	int32_t cur = fpsvitaGetInterval();
 
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_CB]);
+		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_CB]));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
-		return uncappedReturn(1);
+		return logicWaitRet(uncappedReturn(1));
 
-	return vblRet(sceDisplayWaitSetFrameBufMultiCB((unsigned int)cur));
+	return logicWaitRet(vblRet(sceDisplayWaitSetFrameBufMultiCB((unsigned int)cur)));
 }
 
 /* ------------------------------------------------------------------
@@ -464,9 +467,10 @@ static int sceDisplayWaitSetFrameBufCB_patched(void)
  *   - inject: for titles that never wait for vsync, waiting `cur` vblanks
  *     here paces the producer directly instead of stalling the display
  *     thread and leaving the queue full (one frame less latency);
- *   - jit (opt-in, `jit=1` in state.txt): re-poll a controller sample that
- *     is about to be replaced (freshPoll), and at 30/20 caps sleep whole
- *     vblanks when the budget allows so the poll lands on a later sample
+ *   - antilag (opt-in, `antilag=auto` or `1` in state.txt): re-poll a
+ *     controller sample that is about to be replaced (freshPoll). `auto`
+ *     enables only the fresh poll; `1` also sleeps whole vblanks at 30/20
+ *     caps when the budget allows, so the poll lands on a later sample
  *     (jitSleep). Self-retreating: a missed period gates the sleep for 60
  *     frames and the 64-frame warm-up restarts. The sleep is gated on the
  *     controller reads clustering just after AddEntry returns, which is
@@ -479,9 +483,14 @@ static int sceDisplayWaitSetFrameBufCB_patched(void)
 #define FPSVITA_CTRL_WINDOW     128
 #define FPSVITA_CTRL_AFTER_PCT  75
 
-static int s_jitEnabled = 0;
+static int s_jitEnabled = 0;    /* antilag=1: fresh poll and the whole-vblank sleep */
+static int s_autoEnabled = 0;   /* antilag=auto: fresh poll only; the sleep stays off */
 static int32_t s_softcap = 0;   /* `softcap=<fps>`: time-based cap used in Uncapped mode */
 static volatile uint32_t s_softcap_applied;
+/* Limiter schedule: the next release time, a period after the previous
+ * target (Uncapped has no real vblank timestamp). 0 = start over. Only the
+ * submit thread touches it. */
+static uint32_t s_lim_next;
 static volatile uint32_t s_ae_last_ret, s_ae_last_in, s_ae_tid, s_ae_period_ema;
 static volatile uint32_t s_ae_last_raw;      /* previous return before any sleep: true period base */
 static volatile uint32_t s_present_lag_ema; /* submit call -> flip, from the SetFrameBuf hook */
@@ -592,7 +601,7 @@ static int32_t noteCtrlSample(const SceCtrlData *pad, int n)
 	return a;
 }
 
-/* Fresh poll (part of jit, or exp bit 4): a sample nearly a vblank old means
+/* Fresh poll (part of antilag auto/full, or exp bit 4): a sample nearly a vblank old means
  * the next one is about to land (they arrive once per vblank, 0.5 to 1.5 ms
  * after it, and a game that polls right after AddEntry returns loses that
  * race every frame: PCSE00352 read 16.2 ms old samples). Re-poll for up to
@@ -602,14 +611,20 @@ static int32_t noteCtrlSample(const SceCtrlData *pad, int n)
  * On the Read variants the continuation blocks until that next sample
  * instead of spinning, so the 2.5 ms check only runs after it returns; the
  * same age gate keeps that wait to the ~2 ms the sample is away. */
-static int freshPoll(tai_hook_ref_t ref, int port, SceCtrlData *pad, int count, int r, int32_t age)
+static int peekCall(int readIdx, int port, SceCtrlData *pad, int count);
+
+/* peekIdx >= 0: a read=peek title, re-poll through that Read's Peek. */
+static int freshPoll(tai_hook_ref_t ref, int peekIdx, int port, SceCtrlData *pad, int count,
+                     int r, int32_t age)
 {
-	if (!(s_jitEnabled) || r <= 0 || age < (int32_t)FPSVITA_FRESH_DUE_US || age > 40000)
+	if (!(s_jitEnabled || s_autoEnabled)
+	    || r <= 0 || age < (int32_t)FPSVITA_FRESH_DUE_US || age > 40000)
 		return r;
 	uint64_t ts = newestStamp(pad, r);
 	uint32_t t0 = sceKernelGetProcessTimeLow(), spent;
 	for (;;) {
-		int r2 = TAI_CONTINUE(int, ref, port, pad, count);
+		int r2 = peekIdx >= 0 ? peekCall(peekIdx, port, pad, count)
+		                      : TAI_CONTINUE(int, ref, port, pad, count);
 		spent = sceKernelGetProcessTimeLow() - t0;
 		if (r2 > 0 && newestStamp(pad, r2) != ts) { r = r2; s_fresh_hit++; break; }
 		if (spent > FPSVITA_FRESH_WAIT_US) { s_fresh_miss++; break; }
@@ -627,28 +642,59 @@ static inline void noteCtrlOut(const SceCtrlData *pad, int r)
 	if (ts > s_out_stamp) s_out_stamp = ts;
 }
 
+/* "read=peek" per title: a blocking Read becomes the matching Peek. The
+ * helper's own imports are the real functions; the game's Read import is
+ * only hooked, so calling them here does not recurse. */
+static int peekCall(int readIdx, int port, SceCtrlData *pad, int count)
+{
+	switch (readIdx) {
+	case HOOK_CTRL_READ:     return sceCtrlPeekBufferPositive(port, pad, count);
+	case HOOK_CTRL_READ2:    return sceCtrlPeekBufferPositive2(port, pad, count);
+	case HOOK_CTRL_READ_EXT: return sceCtrlPeekBufferPositiveExt(port, pad, count);
+	case HOOK_CTRL_READ_EXT2:return sceCtrlPeekBufferPositiveExt2(port, pad, count);
+	case HOOK_CTRL_READ_NEG: return sceCtrlPeekBufferNegative(port, pad, count);
+	case HOOK_CTRL_READ_NEG2:return sceCtrlPeekBufferNegative2(port, pad, count);
+	default:                 return -1;
+	}
+}
+
 #define CTRL_HOOK(name, idx) \
 	static int name##_patched(int port, SceCtrlData *pad, int count) \
 	{ \
 		noteCtrlRead(); \
 		int r = TAI_CONTINUE(int, s_hookRef[idx], port, pad, count); \
 		int32_t age = noteCtrlSample(pad, r); \
-		r = freshPoll(s_hookRef[idx], port, pad, count, r, age); \
+		r = freshPoll(s_hookRef[idx], -1, port, pad, count, r, age); \
+		noteCtrlOut(pad, r); \
+		return r; \
+	}
+/* A second blocking Read returns only the samples after the first, so with
+ * count > 1 a re-poll would drop the first batch: fresh poll is skipped there.
+ * Peek returns the newest samples each time, so read=peek re-polls at any count. */
+#define CTRL_READ_HOOK(name, idx) \
+	static int name##_patched(int port, SceCtrlData *pad, int count) \
+	{ \
+		noteCtrlRead(); \
+		int r = s_readPeek ? peekCall(idx, port, pad, count) \
+		                   : TAI_CONTINUE(int, s_hookRef[idx], port, pad, count); \
+		int32_t age = noteCtrlSample(pad, r); \
+		if (s_readPeek || count == 1) \
+			r = freshPoll(s_hookRef[idx], s_readPeek ? idx : -1, port, pad, count, r, age); \
 		noteCtrlOut(pad, r); \
 		return r; \
 	}
 CTRL_HOOK(sceCtrlPeekBufferPositive,     HOOK_CTRL_PEEK)
-CTRL_HOOK(sceCtrlReadBufferPositive,     HOOK_CTRL_READ)
+CTRL_READ_HOOK(sceCtrlReadBufferPositive,     HOOK_CTRL_READ)
 CTRL_HOOK(sceCtrlPeekBufferPositive2,    HOOK_CTRL_PEEK2)
-CTRL_HOOK(sceCtrlReadBufferPositive2,    HOOK_CTRL_READ2)
+CTRL_READ_HOOK(sceCtrlReadBufferPositive2,    HOOK_CTRL_READ2)
 CTRL_HOOK(sceCtrlPeekBufferPositiveExt,  HOOK_CTRL_PEEK_EXT)
-CTRL_HOOK(sceCtrlReadBufferPositiveExt,  HOOK_CTRL_READ_EXT)
+CTRL_READ_HOOK(sceCtrlReadBufferPositiveExt,  HOOK_CTRL_READ_EXT)
 CTRL_HOOK(sceCtrlPeekBufferPositiveExt2, HOOK_CTRL_PEEK_EXT2)
-CTRL_HOOK(sceCtrlReadBufferPositiveExt2, HOOK_CTRL_READ_EXT2)
+CTRL_READ_HOOK(sceCtrlReadBufferPositiveExt2, HOOK_CTRL_READ_EXT2)
 CTRL_HOOK(sceCtrlPeekBufferNegative,     HOOK_CTRL_PEEK_NEG)
-CTRL_HOOK(sceCtrlReadBufferNegative,     HOOK_CTRL_READ_NEG)
+CTRL_READ_HOOK(sceCtrlReadBufferNegative,     HOOK_CTRL_READ_NEG)
 CTRL_HOOK(sceCtrlPeekBufferNegative2,    HOOK_CTRL_PEEK_NEG2)
-CTRL_HOOK(sceCtrlReadBufferNegative2,    HOOK_CTRL_READ_NEG2)
+CTRL_READ_HOOK(sceCtrlReadBufferNegative2,    HOOK_CTRL_READ_NEG2)
 
 /* Touch counts as the poll phase only on titles with no controller import
  * (BABEL003D); elsewhere it would double-count the same poll cluster. */
@@ -776,6 +822,9 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 	fpsvitaGetState(&st);
 	int32_t cur = st.interval;
 	s_jitEnabled = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
+	s_autoEnabled = (st.adv_flags & FPSVITA_ADV_AUTO) != 0;
+	if (s_softcap != st.softcap)
+		s_lim_next = 0;
 	s_softcap = st.softcap;
 	if (s_ae_last_raw && tid == s_ae_tid) {
 		uint32_t d = t_ret - s_ae_last_raw;      /* full frame, sleep included */
@@ -790,6 +839,7 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 	s_ae_tid = tid;
 
 
+	int slept = 0, limited = 0;
 	if (injectWanted(&st)) {
 		/* Pace the producer here; the SetFrameBuf path stands down. */
 		sceDisplayWaitVblankStartMulti((unsigned int)cur);
@@ -799,29 +849,36 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 	           && s_ctrl_after_pct >= FPSVITA_CTRL_AFTER_PCT) {
 		jitSleep(t_ret, cur);
 		t_ret = sceKernelGetProcessTimeLow();   /* the sleep is not work */
-	} else if (cur == FPSVITA_INTERVAL_UNCAPPED && s_softcap > 0 && s_ae_last_ret
-	           && tid == s_ae_tid) {
+		slept = 1;
+	} else if (cur == FPSVITA_INTERVAL_UNCAPPED && s_softcap > 0) {
 		/* Software cap without vsync: the waits return at once (Uncapped),
-		 * and the producer is held here until the period has elapsed since
-		 * the previous submit. Catch-up is clamped to one period so a long
-		 * frame does not trigger a burst. The game's delta time still reads
-		 * real time, so nothing desyncs; the panel just latches whatever is
-		 * newest at each vblank. */
+		 * and the producer is held here until the next slot of a fixed
+		 * schedule, one period after the previous slot, so the average rate
+		 * is the cap exactly. A frame late by less than a period gets a
+		 * shorter next slot (the schedule catches up); a frame later than
+		 * that restarts the schedule instead of bursting. The game's delta
+		 * time still reads real time, so nothing desyncs; the panel just
+		 * latches whatever is newest at each vblank. */
 		uint32_t period = 1000000u / (uint32_t)s_softcap;
-		uint32_t elapsed = t_ret - s_ae_last_ret;
-		if (elapsed < period) {
-			uint32_t remain = period - elapsed;
+		int32_t late = (int32_t)(t_ret - s_lim_next);
+		if (!s_lim_next || late > (int32_t)period || late < -(int32_t)period) {
+			s_lim_next = t_ret;
+		} else if (late < 0) {
+			uint32_t remain = (uint32_t)-late;
 			if (remain > FPSVITA_JIT_SPIN_US)
 				sceKernelDelayThread(remain - FPSVITA_JIT_SPIN_US);
-			while (sceKernelGetProcessTimeLow() - s_ae_last_ret < period)
+			while ((int32_t)(sceKernelGetProcessTimeLow() - s_lim_next) < 0)
 				;
+			t_ret = sceKernelGetProcessTimeLow();
 			s_softcap_applied++;
 		}
-		t_ret = sceKernelGetProcessTimeLow();
-		s_jit_slack = 0;
-	} else {
-		s_jit_slack = 0;
+		s_lim_next += period;
+		limited = 1;
 	}
+	/* Off the paths that own them, the sleep and the schedule start over
+	 * when they come back: no stale vblank count or slot. */
+	if (!slept) { s_jit_k = 0; s_jit_ramp = 0; s_jit_slack = 0; }
+	if (!limited) s_lim_next = 0;
 	s_ae_last_ret = t_ret;
 	return r;
 }
@@ -846,6 +903,7 @@ static void pushStats(uint32_t now, const FpsvitaState *stIn)
 	                | (s_hookId[HOOK_GXM_ADD_ENTRY] >= 0 ? FPSVITA_STATF_ADDENTRY : 0)
 	                | (s_tearWanted && s_tearOk ? FPSVITA_STATF_TEAR : 0);
 	st.jit_missed   = s_jit_missed;
+	st.sample_age_us = (uint32_t)(s_ts_out_ema > 0 ? s_ts_out_ema : 0);
 	st.seq          = ++s_stats_seq;
 	fpsvitaSetStats(&st);
 }
@@ -875,10 +933,6 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 	}
 	/* The 64-bit stamps are written on another thread without atomicity: a
 	 * torn read shows up as a negative age, so both EMAs also reject those. */
-	if (s_out_stamp) {
-		int32_t a = clampAge((int64_t)(sceKernelGetProcessTimeWide() - s_out_stamp));
-		if (a >= 0 && a < 500000) s_scan_ema += (a - s_scan_ema) >> 4;
-	}
 	{
 		int hit = 0;
 		uint32_t tnow = sceKernelGetProcessTimeLow();
@@ -906,10 +960,6 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 		}
 		if (!hit) s_entry_unmatched++;
 	}
-	if (s_ae_last_in) {
-		uint32_t lag = sceKernelGetProcessTimeLow() - s_ae_last_in;
-		if (lag < 500000) emaStep(&s_present_lag_ema, lag);
-	}
 
 	/* Atomic: some titles present from more than one thread, and a plain
 	 * read-modify-write silently loses increments. */
@@ -921,7 +971,7 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 	st.autodetect = FPSVITA_AUTODETECT_ON; st.inject = 0; st.adv_flags = 0; st.softcap = 0;
 	fpsvitaGetState(&st);
 	s_jitEnabled = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
-	s_softcap = st.softcap;
+	s_autoEnabled = (st.adv_flags & FPSVITA_ADV_AUTO) != 0;
 	int32_t cur = st.interval;
 	s_tearWanted = (cur == FPSVITA_INTERVAL_UNCAPPED) && (st.adv_flags & FPSVITA_ADV_TEAR) != 0;
 
@@ -1063,6 +1113,7 @@ static int readFileInto(const char *path, char *buf, int size)
 	return bytes > 0 ? bytes : -1;
 }
 
+
 /* One pass over a key=value file. Global keys are taken only when `globals`
  * is set; the title's own line ("TITLEID=interval[,ll=,jit=,sc=]") always. */
 static void parseConfigLines(char *buf, int bytes, const char *titleid,
@@ -1094,7 +1145,8 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 				else if (linelen > 8 && sceClibStrncmp(p, "limiter=", 8) == 0)
 					cfg->softcap = (int32_t)sceClibStrtoll(p + 8, NULL, 10);
 				else if (linelen > 8 && sceClibStrncmp(p, "antilag=", 8) == 0)
-					cfg->jit = (int)sceClibStrtoll(p + 8, NULL, 10) ? 1 : 0;
+					cfg->jit = p[8] == 'a' ? 2
+					           : ((int)sceClibStrtoll(p + 8, NULL, 10) ? 1 : 0);
 				else if (linelen > 8 && sceClibStrncmp(p, "tearing=", 8) == 0)
 					cfg->tear = (int)sceClibStrtoll(p + 8, NULL, 10) ? 1 : 0;
 			}
@@ -1116,11 +1168,14 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 					if (eol - q > 8 && sceClibStrncmp(q, ",lowlat=", 8) == 0)
 						cfg->pg_ll = sceClibStrtoll(q + 8, NULL, 10) ? 1 : 0;
 					else if (eol - q > 9 && sceClibStrncmp(q, ",antilag=", 9) == 0)
-						cfg->pg_jit = sceClibStrtoll(q + 9, NULL, 10) ? 1 : 0;
+						cfg->pg_jit = q[9] == 'a' ? 2
+						              : (sceClibStrtoll(q + 9, NULL, 10) ? 1 : 0);
 					else if (eol - q > 9 && sceClibStrncmp(q, ",limiter=", 9) == 0)
 						cfg->pg_sc = (int32_t)sceClibStrtoll(q + 9, NULL, 10);
 					else if (eol - q > 9 && sceClibStrncmp(q, ",tearing=", 9) == 0)
 						cfg->pg_tear = sceClibStrtoll(q + 9, NULL, 10) ? 1 : 0;
+					else if (eol - q > 9 && sceClibStrncmp(q, ",read=peek", 10) == 0)
+						cfg->pg_read = 1;
 					q++;
 				}
 			}
@@ -1145,9 +1200,10 @@ static __attribute__((noinline)) void readGameConfig(const char *titleid,
 	cfg->autodetect = 1;
 	cfg->softcap = 0;
 	cfg->lowlatency = 0;
-	cfg->jit = 0;
+	cfg->jit = 2;          /* the shell's fresh-install default: auto */
 	cfg->tear = 0;
 	cfg->pg_ll = cfg->pg_jit = cfg->pg_sc = cfg->pg_tear = -1;
+	cfg->pg_read = 0;
 
 	/* One buffer size shared with the shell (FPSVITA_STATE_BUF), so the
 	 * writer can never produce a file this reader cannot fully see. Static
@@ -1192,6 +1248,10 @@ static void clearTitleIdInKernel(void)
 
 void _start() __attribute__((weak, alias("module_start")));
 
+/* Exp bit 32 source probe: the dev-only handlers are installed with the rest
+ * of the hook table when one of the probe/dilation bits is set; the counters
+ * surface in the rate window as a separate `helper: probe` line. */
+
 struct HookSpec {
 	uint32_t nid;
 	const void *func;
@@ -1228,6 +1288,86 @@ static const struct HookSpec s_specs[HOOK_COUNT] = {
 static char    s_titleid[32];
 static int32_t s_pergame = FPSVITA_NO_PERGAME;
 
+/* One line at game start: the VitaGrafix section for this title (so a
+ * resolution or FPS patch is visible next to the measurements) and the
+ * clocks another plugin has set. The config is only a declaration: a
+ * section with ENABLED=1 still depends on VitaGrafix being loaded and
+ * matching the build, but it is the best signal available from user mode. */
+static void copyConfigValue(char *dst, int cap, const char *p, const char *eol)
+{
+	int n = (int)(eol - p);
+	if (n < 0) n = 0;
+	if (n >= cap) n = cap - 1;
+	sceClibMemcpy(dst, p, n);
+	dst[n] = '\0';
+}
+
+static void readVitaGrafixEnv(const char *titleid, int *enabled, int *fps,
+                              char *ib, char *fb)
+{
+	static char buf[16384];
+	static const char *const paths[2] = {
+		"ux0:data/VitaGrafix/config.txt",
+		"ur0:data/VitaGrafix/config.txt",
+	};
+	int bytes = -1;
+	int i;
+
+	for (i = 0; i < 2 && bytes <= 0; i++)
+		bytes = readFileInto(paths[i], buf, sizeof(buf));
+
+	*enabled = -1;
+	*fps = -1;
+	ib[0] = fb[0] = '\0';
+	if (bytes <= 0)
+		return;
+
+	int tidlen = 0;
+	while (titleid[tidlen] && tidlen < 31)
+		tidlen++;
+
+	char *p = buf;
+	int in = 0;
+	while (*p && p < buf + bytes) {
+		char *eol = p;
+		while (*eol && *eol != '\n' && eol < buf + bytes)
+			eol++;
+		int len = (int)(eol - p);
+
+		if (len > 2 && p[0] == '[' && p[len - 1] == ']') {
+			in = (len - 2 == tidlen
+			      && sceClibStrncmp(p + 1, titleid, tidlen) == 0);
+		} else if (in) {
+			if (len > 8 && sceClibStrncmp(p, "ENABLED=", 8) == 0)
+				*enabled = (int)sceClibStrtoll(p + 8, NULL, 10);
+			else if (len > 4 && sceClibStrncmp(p, "FPS=", 4) == 0)
+				*fps = (p[4] == 'O' || p[4] == 'o') ? -1
+				     : (int)sceClibStrtoll(p + 4, NULL, 10);
+			else if (len > 3 && sceClibStrncmp(p, "IB=", 3) == 0)
+				copyConfigValue(ib, 16, p + 3, eol);
+			else if (len > 3 && sceClibStrncmp(p, "FB=", 3) == 0)
+				copyConfigValue(fb, 16, p + 3, eol);
+		}
+
+		p = (*eol == '\n') ? eol + 1 : eol;
+		if (p == eol) break;
+	}
+}
+
+static void logEnvironment(void)
+{
+	char ib[16], fb[16], line[160];
+	int vg_enabled, vg_fps;
+
+	readVitaGrafixEnv(s_titleid, &vg_enabled, &vg_fps, ib, fb);
+	sceClibSnprintf(line, sizeof(line),
+	                "helper: env vg=%d ib=%s fb=%s fps=%d arm=%d gpu=%d bus=%d\n",
+	                vg_enabled, ib[0] ? ib : "-", fb[0] ? fb : "-", vg_fps,
+	                scePowerGetArmClockFrequency(), scePowerGetGpuClockFrequency(),
+	                scePowerGetBusClockFrequency());
+	helperLog(line);
+}
+
 /* Try the display hooks on one module's imports. Each hook is installed at
  * most once (the patched functions carry a single ref per NID), so the first
  * module that imports a function keeps it. Returns the number added. */
@@ -1263,7 +1403,9 @@ static unsigned hookMask(void)
 {
 	unsigned mask = 0;
 	int i;
-	for (i = 0; i < HOOK_COUNT; i++)
+	/* The mask is 32 bits; dev probe entries past bit 31 are not shown
+	 * (a shift by 32 or more is undefined). */
+	for (i = 0; i < HOOK_COUNT && i < 32; i++)
 		if (s_hookId[i] >= 0) mask |= 1u << i;
 	return mask;
 }
@@ -1286,13 +1428,17 @@ static void takeKernelOwnership(void)
 		/* Restore target at module_stop: the globals from config.txt, like
 		 * the interval. Not the kernel's current values, which after a killed
 		 * title (no module_stop) are still that title's. */
-		s_savedAdvFlags = (s_cfg.lowlatency ? FPSVITA_ADV_LOWLAT : 0) | (s_cfg.jit ? FPSVITA_ADV_JIT : 0)
+		s_savedAdvFlags = (s_cfg.lowlatency ? FPSVITA_ADV_LOWLAT : 0)
+		                | (s_cfg.jit == 1 ? FPSVITA_ADV_JIT : 0)
+		                | (s_cfg.jit == 2 ? FPSVITA_ADV_AUTO : 0)
 		                | (s_cfg.tear ? FPSVITA_ADV_TEAR : 0);
 		s_savedSoftcap = s_cfg.softcap;
 		int jit = s_cfg.pg_jit >= 0 ? s_cfg.pg_jit : s_cfg.jit;
 		int tear = s_cfg.pg_tear >= 0 ? s_cfg.pg_tear : s_cfg.tear;
 		int32_t sc = s_cfg.pg_sc >= 0 ? s_cfg.pg_sc : s_cfg.softcap;
-		fpsvitaSetAdvanced((s_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | (jit ? FPSVITA_ADV_JIT : 0)
+		fpsvitaSetAdvanced((s_lowLatency ? FPSVITA_ADV_LOWLAT : 0)
+		                   | (jit == 1 ? FPSVITA_ADV_JIT : 0)
+		                   | (jit == 2 ? FPSVITA_ADV_AUTO : 0)
 		                   | (tear ? FPSVITA_ADV_TEAR : 0), sc);
 	}
 	if (s_pergame != FPSVITA_NO_PERGAME) {
@@ -1400,6 +1546,7 @@ int module_start(SceSize argc, const void *args)
 
 	readGameConfig(s_titleid, &s_cfg);
 	s_pergame = s_cfg.pergame;
+	s_readPeek = s_cfg.pg_read;
 #ifdef FPSVITA_LITE
 	/* No shell to seed the globals: this process is its own kernel. */
 	fpsvitaSetInterval(s_cfg.interval);
@@ -1412,9 +1559,10 @@ int module_start(SceSize argc, const void *args)
 	int pacing = pacingHooked();
 	int loaders = pacing ? 0 : installLoaderHooks();
 	sceClibSnprintf(line, sizeof(line),
-	                "helper: %s hooks=%d mask=0x%04x loaders=%d pergame=%d\n",
-	                s_titleid, installed, hookMask(), loaders, (int)s_pergame);
+	                "helper: %s hooks=%d mask=0x%04x loaders=%d pergame=%d read=%d\n",
+	                s_titleid, installed, hookMask(), loaders, (int)s_pergame, s_readPeek);
 	helperLog(line);
+	logEnvironment();
 
 	if (pacing)
 		takeKernelOwnership();
@@ -1439,12 +1587,17 @@ int module_stop(SceSize argc, const void *args)
 			s_loaderId[i] = -1;
 		}
 	}
+	/* Title id first: the shell polls every 200 ms and treats a limit or
+	 * latency change seen while a title is still named as a user toggle
+	 * (the overlay's LAST row). With the title gone, the restores below
+	 * are just the globals coming back. */
+	if (s_ownsKernelState)
+		clearTitleIdInKernel();
 	if (s_appliedOverride) {
 		fpsvitaSetInterval(s_savedInterval);
 		s_appliedOverride = 0;
 	}
 	if (s_ownsKernelState) {
-		clearTitleIdInKernel();
 		fpsvitaSetNativeInterval(0);
 		fpsvitaSetAdvanced(s_savedAdvFlags, s_savedSoftcap);
 		s_ownsKernelState = 0;

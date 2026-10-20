@@ -11,6 +11,7 @@ endif()
 project(FPSVita-UI C CXX)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
+
 #
 # Build order matters: kernel module must be built first to generate
 # FpsvitaForUser stub library used by companion and shell.

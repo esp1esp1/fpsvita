@@ -22,6 +22,7 @@
 #include "impose.h"
 #include "hud.h"
 #include "../common/fpsvita_common.h"
+#include "compat.h"
 
 using namespace paf;
 
@@ -54,6 +55,8 @@ static const wchar_t *getModeString(int32_t interval, bool tear)
  * Read titleid from kernel module (3 x uint32_t parts → string)
  * ------------------------------------------------------------------ */
 
+bool titleReadsPeek(const char *titleid);   /* below, with the state.txt IO */
+
 void Impose::ReadTitleId()
 {
 	uint32_t parts[3];
@@ -66,6 +69,7 @@ void Impose::ReadTitleId()
 
 	/* Game is running if titleid is non-empty */
 	hasGame = (titleid[0] != '\0');
+	readPeek = hasGame && titleReadsPeek(titleid);
 }
 
 /* ------------------------------------------------------------------
@@ -136,16 +140,20 @@ static bool writeWhole(const char *path, const char *data, int len)
 /* config.txt: the globals, regenerated whole. Nothing to preserve. */
 static void writeConfigFile(int32_t interval, int32_t inject, int32_t autodetect)
 {
-	char buf[192], vsync[8];
+	char buf[192], vsync[8], antilag[8];
 	if (autodetect)
 		sce_paf_snprintf(vsync, sizeof(vsync), "auto");
 	else
 		sce_paf_snprintf(vsync, sizeof(vsync), "%d", (int)inject);
+	if (g_jit == 2)
+		sce_paf_snprintf(antilag, sizeof(antilag), "auto");
+	else
+		sce_paf_snprintf(antilag, sizeof(antilag), "%d", (int)g_jit);
 	int len = sce_paf_snprintf(buf, sizeof(buf),
 	                            "limit=%d\nvsync=%s\nhud=%d\nhudpos=%d\n"
-	                            "lowlat=%d\nantilag=%d\nlimiter=%d\ntearing=%d\n",
+	                            "lowlat=%d\nantilag=%s\nlimiter=%d\ntearing=%d\n",
 	                            interval, vsync, g_hudMode, g_hudPos,
-	                            g_lowLatency, g_jit, g_softcap, g_tear);
+	                            g_lowLatency, antilag, g_softcap, g_tear);
 	if (len > 0 && len < (int)sizeof(buf))
 		writeWhole(FPSVITA_CONFIG_FILE, buf, len);
 }
@@ -161,17 +169,21 @@ static void writeConfigFile(int32_t interval, int32_t inject, int32_t autodetect
  */
 static bool appendPerGameLine(char *out, int *outpos, int outsize,
                                const char *titleid, int32_t interval,
-                               int32_t advFlags, int32_t softcap)
+                               int32_t advFlags, int32_t softcap, bool readPeek)
 {
-	char line[80];
-	int n = sce_paf_snprintf(line, sizeof(line), "%s=%d,lowlat=%d,antilag=%d,limiter=%d,tearing=%d\n",
+	char line[96];
+	const char *antilag = (advFlags & FPSVITA_ADV_JIT) ? "1"
+	                    : (advFlags & FPSVITA_ADV_AUTO) ? "auto" : "0";
+	int n = sce_paf_snprintf(line, sizeof(line),
+	                         "%s=%d,lowlat=%d,antilag=%s,limiter=%d,tearing=%d%s\n",
 	                         titleid, interval,
 	                         (advFlags & FPSVITA_ADV_LOWLAT) ? 1 : 0,
-	                         (advFlags & FPSVITA_ADV_JIT) ? 1 : 0, softcap,
-	                         (advFlags & FPSVITA_ADV_TEAR) ? 1 : 0);
+	                         antilag, softcap,
+	                         (advFlags & FPSVITA_ADV_TEAR) ? 1 : 0,
+	                         readPeek ? ",read=peek" : "");
 	if (n <= 0 || n >= (int)sizeof(line))
 		return false;
-	if (*outpos + n >= outsize)
+	if (*outpos + n >= outsize - 1)   /* readWhole refuses a file of outsize - 1 bytes */
 		return false;
 
 	sce_paf_memcpy(out + *outpos, line, n);
@@ -187,6 +199,37 @@ void Impose::PersistState()
 		g_globalInterval = currentInterval;
 
 	writeConfigFile(g_globalInterval, currentInject, autodetect);
+}
+
+/* The per-game line has no UI for "read=peek"; carry it over when the user
+ * saves the other options. */
+static bool lineHasReadPeek(const char *p, int len)
+{
+	for (int i = 0; i + 10 <= len; i++)
+		if (sce_paf_strncmp(p + i, ",read=peek", 10) == 0)
+			return true;
+	return false;
+}
+
+/* Whether this title's state.txt line carries ",read=peek". */
+bool titleReadsPeek(const char *titleid)
+{
+	int tidlen = 0;
+	while (tidlen < FPSVITA_TITLEID_LEN && titleid[tidlen])
+		tidlen++;
+	if (tidlen == 0 || readWhole(FPSVITA_STATE_FILE) <= 0)
+		return false;
+	const char *p = s_readBuf;
+	while (*p) {
+		const char *eol = p;
+		while (*eol && *eol != '\n') eol++;
+		int linelen = (int)(eol - p);
+		if (linelen > tidlen && p[tidlen] == '=' && sce_paf_strncmp(p, titleid, tidlen) == 0)
+			return lineHasReadPeek(p, linelen);
+		if (*eol != '\n') break;
+		p = eol + 1;
+	}
+	return false;
 }
 
 /* state.txt: this title's line replaced or appended, every other line kept
@@ -211,6 +254,7 @@ void Impose::SavePerGame()
 	sce_paf_memset(s_rebuilt, 0, sizeof(s_rebuilt));
 	int outpos = 0;
 	bool found = false;
+	bool readPeek = false;
 
 	char *p = s_readBuf;
 	while (*p && p < s_readBuf + bytes) {
@@ -230,12 +274,14 @@ void Impose::SavePerGame()
 		}
 
 		if (match) {
+			readPeek = lineHasReadPeek(p, linelen);
 			if (!appendPerGameLine(s_rebuilt, &outpos, sizeof(s_rebuilt),
-			                        titleid, currentInterval, advFlags, softcap))
+			                        titleid, currentInterval, advFlags, softcap,
+			                        readPeek))
 				return;
 			found = true;
 		} else if (linelen > 0) {
-			if (outpos + linelen + 1 >= (int)sizeof(s_rebuilt))
+			if (outpos + linelen + 1 >= (int)sizeof(s_rebuilt) - 1)
 				return;
 			sce_paf_memcpy(s_rebuilt + outpos, p, linelen);
 			outpos += linelen;
@@ -247,7 +293,8 @@ void Impose::SavePerGame()
 	}
 
 	if (!found && !appendPerGameLine(s_rebuilt, &outpos, sizeof(s_rebuilt),
-	                                  titleid, currentInterval, advFlags, softcap))
+	                                  titleid, currentInterval, advFlags, softcap,
+	                                  false))
 		return;
 
 	writeWhole(FPSVITA_STATE_FILE, s_rebuilt, outpos);
@@ -292,7 +339,7 @@ bool readGlobals(int32_t *interval, int32_t *inject, int32_t *autodetect,
 			else if (klen == 6 && sce_paf_strncmp(p, "lowlat", 6) == 0)
 				g_lowLatency = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 			else if (klen == 7 && sce_paf_strncmp(p, "antilag", 7) == 0)
-				g_jit = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
+				g_jit = (*val == 'a') ? 2 : (sce_paf_strtol(val, NULL, 10) ? 1 : 0);
 			else if (klen == 7 && sce_paf_strncmp(p, "limiter", 7) == 0)
 				g_softcap = (int32_t)sce_paf_strtol(val, NULL, 10);
 			else if (klen == 7 && sce_paf_strncmp(p, "tearing", 7) == 0)
@@ -324,9 +371,9 @@ void Impose::UpdateModeLabel()
 
 	bool tear = (advFlags & FPSVITA_ADV_TEAR) != 0;
 	if (nfps > 0) {
-		/* With the rate the game asked for itself: "30fps (game 60)" */
+		/* With the rate the game asked for itself: "30fps (og:60)" */
 		sce_paf_swprintf(buf, sizeof(buf) / sizeof(wchar_t),
-		                  L"%ls (game %d)", getModeString(currentInterval, tear),
+		                  L"%ls (og:%d)", getModeString(currentInterval, tear),
 		                  nfps);
 	} else {
 		/* No native detected yet */
@@ -336,6 +383,21 @@ void Impose::UpdateModeLabel()
 
 	paf::wstring wstr(buf);
 	fpsvita_textSetString(modeText, wstr, 0);
+}
+
+/* The compatibility list's known-bad table is static, so the quick menu can
+ * say a combination is suspect before the game has run. The measured advice
+ * stays in the overlay's TIP row. */
+void Impose::UpdateWarning()
+{
+	if (!warnText)
+		return;
+	bool show = hasGame
+	         && fpsvitaCompatWarn(fpsvitaCompatFlags(titleid), currentInterval, readPeek) != NULL;
+	if (show)
+		widgetShow(warnText);
+	else
+		widgetHide(warnText);
 }
 
 void Impose::UpdateInjectState()
@@ -422,6 +484,7 @@ void Impose::CycleMode(int32_t dir)
 	}
 
 	obj->UpdateModeLabel();
+	obj->UpdateWarning();
 	obj->UpdateInjectState();
 }
 
@@ -478,7 +541,13 @@ void Impose::LowlatCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *us
 void Impose::JitCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *userdata)
 {
 	Impose *obj = (Impose *)userdata;
-	obj->advFlags ^= FPSVITA_ADV_JIT;
+	/* The box is checked for both Auto and full Antilag. The first click
+	 * turns either off; the next turns full Antilag on. Auto is the
+	 * fresh-install default and is restored by editing config.txt. */
+	bool on = (obj->advFlags & (FPSVITA_ADV_JIT | FPSVITA_ADV_AUTO)) != 0;
+	obj->advFlags &= ~(FPSVITA_ADV_JIT | FPSVITA_ADV_AUTO);
+	if (!on)
+		obj->advFlags |= FPSVITA_ADV_JIT;
 	obj->ApplyAdvanced();
 }
 
@@ -501,7 +570,8 @@ void Impose::ApplyAdvanced()
 	fpsvitaSetAdvanced(advFlags, softcap);
 	if (!hasGame) {
 		g_lowLatency = (advFlags & FPSVITA_ADV_LOWLAT) ? 1 : 0;
-		g_jit = (advFlags & FPSVITA_ADV_JIT) ? 1 : 0;
+		g_jit = (advFlags & FPSVITA_ADV_JIT) ? 1
+		      : (advFlags & FPSVITA_ADV_AUTO) ? 2 : 0;
 		g_tear = (advFlags & FPSVITA_ADV_TEAR) ? 1 : 0;
 		g_softcap = softcap;
 		PersistState();
@@ -574,8 +644,10 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	this->llBox = NULL;
 	this->jitBox = NULL;
 	this->softcapText = NULL;
+	this->warnText = NULL;
 	this->advFlags = 0;
 	this->softcap = 0;
+	this->readPeek = false;
 	this->valid = false;
 	this->registered = false;
 
@@ -596,7 +668,7 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	if (!hasGame && fpsvitaGetInterval() != g_globalInterval)
 		fpsvitaSetInterval(g_globalInterval);
 	if (!hasGame)
-		fpsvitaSetAdvanced((g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | (g_jit ? FPSVITA_ADV_JIT : 0)
+		fpsvitaSetAdvanced((g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | fpsvitaJitFlags(g_jit)
 		                   | (g_tear ? FPSVITA_ADV_TEAR : 0), g_softcap);
 
 	/* Read current state from kernel module */
@@ -612,7 +684,7 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 		this->advFlags = st.adv_flags;
 		this->softcap = st.softcap;
 	} else {
-		this->advFlags = (g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | (g_jit ? FPSVITA_ADV_JIT : 0)
+		this->advFlags = (g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | fpsvitaJitFlags(g_jit)
 		               | (g_tear ? FPSVITA_ADV_TEAR : 0);
 		this->softcap = g_softcap;
 	}
@@ -652,6 +724,8 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	/* Find child widgets */
 	this->modeText = (ui::Text *)this->root->FindChild(
 		IDParam("fc_text_mode_value"), 0);
+	this->warnText = (ui::Text *)this->root->FindChild(
+		IDParam("fc_text_warn"), 0);
 	this->injectBox = (ui::CheckBox *)this->root->FindChild(
 		IDParam("fc_check_inject"), 0);
 	this->injectLabel = (ui::Text *)this->root->FindChild(
@@ -680,7 +754,7 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 
 	/* Every widget in the template is required. Partial construction would
 	 * leave callbacks bound to an object whose members are NULL. */
-	if (!modeText || !injectBox || !injectLabel || !saveButton
+	if (!modeText || !warnText || !injectBox || !injectLabel || !saveButton
 	    || !modeDown || !modeUp || !hudText || !hudPosText
 	    || !hudDown || !hudUp || !hudPosDown || !hudPosUp
 	    || !llBox || !jitBox || !softcapText || !scDown || !scUp) {
@@ -689,12 +763,18 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	}
 
 	/* Set initial display state */
+	if (warnText) {
+		wchar_t wbuf[] = L"(!)";
+		paf::wstring wstr(wbuf);
+		fpsvita_textSetString(warnText, wstr, 0);
+	}
 	UpdateModeLabel();
+	UpdateWarning();
 	injectBox->SetCheck(this->currentInject == FPSVITA_INJECT_ON);
 	UpdateInjectState();
 	UpdateHudLabels();
 	llBox->SetCheck((advFlags & FPSVITA_ADV_LOWLAT) != 0);
-	jitBox->SetCheck((advFlags & FPSVITA_ADV_JIT) != 0);
+	jitBox->SetCheck((advFlags & (FPSVITA_ADV_JIT | FPSVITA_ADV_AUTO)) != 0);
 	UpdateSoftcapLabel();
 
 	/* Show save button only when a game is running */

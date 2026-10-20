@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.2.0 (2026-10-20)
+
+### Added
+
+- `antilag=auto`: the fresh poll is on by default for fresh installs, while the whole-vblank
+  sleep stays off until `antilag=1` is set. The overlay shows `AUTO` (Mini: `AL`); the quick-menu
+  checkbox is checked under auto, unticking it turns Antilag off and ticking it again selects
+  full Antilag. Back to auto is `antilag=auto` in `config.txt` or on the title's `state.txt`
+  line, by hand. The overlay's `TIP` says `TRY FULL ANTI-LAG` when only the whole-vblank sleep
+  would pay. A `config.txt` with no `antilag=` line means auto; existing files keep their
+  explicit `antilag=0` or `antilag=1`. The lite helper honours auto too.
+- `helper: env` at game start: the title's VitaGrafix section (`ENABLED`, `IB`, `FB`, `FPS`)
+  and the current ARM/GPU/bus clocks, in `helper.log`.
+- Known problems from the compatibility list's incompatible table, at the limit they apply
+  to: the quick menu shows `(!)` next to the FPS row, and the overlay's `TIP` row shows the
+  problem (`NO INPUT ABOVE 59`, `FREEZES, USE DEFAULT`, `SHIP SHAKES WITH CAP`,
+  `VIDEOS BREAK AT 60`, `MENUS RUN FAST`, `SLOW MOTION AT 20`, `SPEED TIED TO FPS`) when no
+  measured tip applies (`NOT HELD`, `TRY FULL ANTI-LAG` and `TRY LOW LAT` win). The table is
+  generated from `docs/compatibility-list.md` by `tools/gen_compat.py`; `tests/run.sh` fails
+  if `shell/compat_data.h` is stale.
+- Per-game `read=peek`: converts a title's blocking `sceCtrlRead*` to the matching
+  `sceCtrlPeek*`, a fix for titles that lose input when they run above their own rate.
+  `Save` preserves the key, and the `(!)` and `NO INPUT ABOVE 59` warning go away once it is
+  set. Anti-lag's fresh poll re-polls through
+  the Peek on these titles.
+
+### Changed
+
+- Mini's second line uses short forms (`VSYNC`, `LL`, `LL?`, `AL`, `AL+`, `LIM 40`), so it fits
+  the box in the right-hand corners, where the full words ran off the screen.
+
+- The Limiter now holds the submit thread to a fixed schedule: each slot is one period after
+  the previous one, so the average rate is the cap exactly. A frame late by less than a period
+  gets a shorter next slot and the schedule catches up; a frame later than that restarts the
+  schedule instead of bursting.
+- The fresh poll is skipped on a blocking `sceCtrlRead*` that asks for more than one sample,
+  where a re-poll would drop samples.
+- The native-rate suffix is now `(og:60)` in the quick menu and overlay, replacing
+  `(game 60)`. The shorter form fits the FPS row and names the original rate plainly.
+
 ## v0.1.1 (2026-10-19)
 
 ### Fixed

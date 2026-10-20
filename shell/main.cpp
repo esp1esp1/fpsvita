@@ -100,7 +100,7 @@ int32_t g_globalInterval = FPSVITA_INTERVAL_OFF;
 int32_t g_hudMode = FPSVITA_HUD_OFF;
 int32_t g_hudPos = 0;
 int32_t g_lowLatency = 0;
-int32_t g_jit = 0;
+int32_t g_jit = 2;   /* fresh install: auto Antilag (fresh poll only) */
 int32_t g_softcap = 0;
 int32_t g_tear = 0;
 static Framework *s_fwkInstance = NULL; /* cached during stage 1 */
@@ -383,7 +383,7 @@ static SceInt32 sceAVConfigRegisterCallback_patched(SceUID cbid, SceInt32 a2)
 	fpsvitaSetHud(g_hudMode, g_hudPos);
 	if (g_softcap < FPSVITA_SOFTCAP_MIN || g_softcap > FPSVITA_SOFTCAP_MAX)
 		g_softcap = 0;
-	fpsvitaSetAdvanced((g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | (g_jit ? FPSVITA_ADV_JIT : 0)
+	fpsvitaSetAdvanced((g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | fpsvitaJitFlags(g_jit)
 	                   | (g_tear ? FPSVITA_ADV_TEAR : 0), g_softcap);
 	if (!haveConfig) {
 		/* Fresh install: write the defaults so the file exists to edit. */

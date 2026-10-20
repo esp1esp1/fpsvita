@@ -20,8 +20,9 @@ extern int32_t g_globalInterval;
 extern int32_t g_hudMode;
 extern int32_t g_hudPos;
 
-/* Global latency defaults (`lowlatency=`, `jit=`, `softcap=`). A per-game
- * line overrides them. */
+/* Global latency defaults (`lowlat=`, `antilag=`, `limiter=`). A per-game
+ * line overrides them. g_jit: 0 off, 1 full Antilag, 2 auto (fresh poll
+ * only; the whole-vblank sleep stays off). */
 extern int32_t g_lowLatency;
 extern int32_t g_jit;
 extern int32_t g_softcap;
@@ -69,6 +70,12 @@ static inline void textSet(paf::ui::Text *t, const wchar_t *s)
 	if (!t) return;
 	paf::wstring w(s);
 	fpsvita_textSetString(t, w, 0);
+}
+
+/* g_jit (0 off, 1 full, 2 auto) -> the kernel advanced flag. */
+static inline int32_t fpsvitaJitFlags(int32_t v)
+{
+	return v == 1 ? FPSVITA_ADV_JIT : v == 2 ? FPSVITA_ADV_AUTO : 0;
 }
 
 /* Index of a softcap value in fpsvita_softcap_cycle, 0 (off) if not listed. */

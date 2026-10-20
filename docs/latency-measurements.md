@@ -85,6 +85,11 @@ that keeps the second slot full:
 | Metal Gear Solid 2 HD (60), menu | 26 ms with or without Lowlat |
 | The Wolf Among Us (30) | 11 ms with Antilag, 8 ms with both; within the noise |
 
+The Metal Gear Solid 2 and Wolf Among Us rows were taken with an earlier measure that aged the
+sample at the next flip rather than at that frame's own flip. It understates a two-deep queue
+by up to a frame, so those numbers compare with each other but not with the INPUT figures
+elsewhere in this file.
+
 The overlay's QUEUE row tells you which case a game is: near a whole frame means Lowlat will
 pay, a few milliseconds means it will not. Some homebrew ports set up graphics in a way the
 helper cannot see (Doom64EX); the overlay reports Lowlat as pending there and it has no
@@ -111,12 +116,13 @@ is why the lite plugin cannot offer it.
 
 - **Adaptive vsync** (skip the wait when the frame is already late): the data so far shows few
   frames missing by a small margin, so it is on hold.
-- **50 Hz or 48 Hz panel modes** for an even 50 or 48 fps: the firmware lists such modes but
-  nothing has been tried on hardware.
+- **50 Hz or 48 Hz panel modes** for an even 50 or 48 fps: the firmware lists such modes. One
+  try on an OLED Vita got the panel to about 47.8 Hz by switching the output mode and going
+  through sleep and resume; not usable yet.
 - **Scanline sync** from the kernel, and a **fresher button read** straight from the system
   controller chip: possible in principle, unmeasured.
-- **A time-based limiter locked to the refresh** and self-correcting rates: the Limiter is
-  still the simple version.
+- **A time-based limiter locked to the refresh**: the Limiter keeps a fixed schedule, so its
+  average rate is the cap exactly, but its slots are not phase-locked to the vblank.
 
 ## Further reading
 

@@ -127,6 +127,7 @@ extern "C" {
 #define FPSVITA_ADV_LOWLAT (1 << 0)
 #define FPSVITA_ADV_JIT    (1 << 1)   /* anti-lag: fresh poll and the whole-vblank sleep */
 #define FPSVITA_ADV_TEAR   (1 << 2)   /* Uncapped only: every flip IMMEDIATE through the kernel */
+#define FPSVITA_ADV_AUTO   (1 << 3)   /* anti-lag auto: fresh poll only; the sleep stays off */
 #define FPSVITA_SOFTCAP_MIN (10)
 #define FPSVITA_SOFTCAP_MAX (120)
 static const int32_t fpsvita_softcap_cycle[] = {0, 20, 24, 25, 30, 40, 45, 50, 60};
@@ -136,7 +137,7 @@ static const int32_t fpsvita_softcap_cycle[] = {0, 20, 24, 25, 30, 40, 45, 50, 6
  * HUD is on. All EMAs are microseconds; 0 means "not measured". */
 #define FPSVITA_STATF_INJECT     (1u << 0)  /* inject wait engaged (manual or auto) */
 #define FPSVITA_STATF_LOWLATENCY (1u << 1)  /* GXM queue depth clamped at this title's init: in effect */
-#define FPSVITA_STATF_JIT        (1u << 2)  /* jit requested for this title */
+#define FPSVITA_STATF_JIT        (1u << 2)  /* full Antilag requested; auto is in adv_flags */
 #define FPSVITA_STATF_ADDENTRY   (1u << 3)  /* AddEntry hooked: work/queue/input are valid */
 #define FPSVITA_STATF_TEAR       (1u << 4)  /* tearing flips are going through the kernel */
 #define FPSVITA_STATF_LOWLAT_NATIVE (1u << 5) /* the title itself asked for a 1-deep queue */
@@ -152,6 +153,7 @@ typedef struct FpsvitaStats {
 	int32_t  softcap;       /* fps, 0 off */
 	uint32_t flags;         /* FPSVITA_STATF_* */
 	uint32_t jit_missed;    /* frames over budget while jit was sleeping (each one gates it) */
+	uint32_t sample_age_us; /* age of the controller sample the game gets, EMA (0: no ctrl hook) */
 	uint32_t seq;           /* bumps per push; 0 = nothing pushed yet */
 } FpsvitaStats;
 

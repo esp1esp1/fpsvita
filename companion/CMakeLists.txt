@@ -18,6 +18,7 @@ foreach(variant fpsvita-helper fpsvita-helper-lite)
     SceIofilemgr_stub
     SceKernelThreadMgr_stub
     SceKernelModulemgr_stub
+    ScePower_stub
   )
   set_target_properties(${variant} PROPERTIES LINK_FLAGS "-nostdlib")
   vita_create_self(${variant}.suprx ${variant}
