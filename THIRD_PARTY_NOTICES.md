@@ -1,17 +1,30 @@
 # Third-party notices
 
-fpsvita is licensed under the GPL-3.0 (see `LICENSE`). It builds on, borrows from or depends
-on the following.
+For anyone redistributing or building on fpsvita: the projects it uses or borrows from, and
+their licences. fpsvita itself is licensed under GPL-3.0 (see [LICENSE](LICENSE)).
 
-| Component | Use | Licence |
-|---|---|---|
-| [Framecapper](https://github.com/Rinnegatamante/Framecapper) by Rinnegatamante | The helper's display-wait hooks follow its approach. | GPL-3.0 |
-| [PSVshellPlus](https://github.com/GrapheneCt/PSVshellPlus) by GrapheneCt | Quick-menu hook pattern, impose widget ids, HUD styling. | MIT |
-| [taiHEN](https://github.com/yifanlu/taiHEN) | Plugin loading and function hooks (runtime dependency). | MIT |
-| [kubridge](https://github.com/bythos14/kubridge) by bythos14 | User-mode exception handler for the shell's crash trace (runtime dependency, weak import). | No licence stated |
-| [ScePaf-RE](https://github.com/VitaArchive/ScePaf-RE) | Reverse-engineered ScePaf headers and export lists, used at build time. `shell/paf_stubs/ScePafRE.yml` is generated from its export lists; `shell/paf_compat/` carries a few of its headers with GCC fixes. | No licence stated |
-| [vitasdk](https://vitasdk.org) | Toolchain, headers and stubs. | Various (MIT, LGPL and others per component) |
-| [acdc](https://github.com/isage/acdc) by isage | CXML compiler used to build the RCO (build-time tool, not redistributed). | See its repository |
+## Code, patterns and tools
 
-The Steam Deck, RTSS and NVIDIA option names referenced in the documentation are used to
-explain the options; no code from those products is involved.
+| Project | Author | Used for | When | Licence |
+|---|---|---|---|---|
+| [Framecapper](https://github.com/Rinnegatamante/Framecapper) | Rinnegatamante | The display-wait hook approach | Adapted in the source | GPL-3.0 |
+| [PSVshellPlus](https://github.com/GrapheneCt/PSVshellPlus) | GrapheneCt | The quick-menu hook pattern, impose widget ids, overlay styling | Adapted in the source | MIT |
+| [taiHEN](https://github.com/yifanlu/taiHEN) | yifanlu | Plugin loading and hooks | Runtime dependency | MIT |
+| [kubridge](https://github.com/bythos14/kubridge) | bythos14 | User-mode exception handler for the shell's crash log (weak import, optional) | Runtime dependency | None stated |
+| [ScePaf-RE](https://github.com/VitaArchive/ScePaf-RE) | VitaArchive | Reverse-engineered ScePaf headers and export lists. `shell/paf_stubs/ScePafRE.yml` is generated from them, and `shell/paf_compat/` carries a few of its headers with GCC fixes | Build time | None stated |
+| [vitasdk](https://vitasdk.org) | vitasdk contributors | Toolchain, headers and stubs | Build time | Various |
+| [acdc](https://github.com/isage/acdc) | isage | Builds the RCO | Build time | See its repository (not redistributed) |
+
+## Names
+
+Option names borrowed from the Steam Deck, RTSS and NVIDIA are used only to explain the
+options. No code from them is used.
+
+## Projects whose source informed the design
+
+- Vita: Framecapper, VitaGrafix and VGi, PSVshell and PSVshellPlus, divasplit, vitaGL,
+  libvita2d, RetroArch's GXM driver, Vita3K.
+- Latency on other platforms: NVIDIA Reflex, AMD Anti-Lag 2, Intel XeLL, LatencyFleX, RTSS,
+  Special K, RetroArch's frame delay, Android Swappy.
+- Other consoles and compositors: SaltyNX and FPSLocker (Switch), GoldHEN (PS4), gamescope.
+- Documentation: the henkaku wiki pages on SceCtrl, SceSyscon and SceDisplay.

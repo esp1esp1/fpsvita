@@ -9,12 +9,12 @@ extern paf::ui::ScrollView *g_imposeRoot;
 
 /*
  * The user's global interval, as opposed to whatever a running game's
- * per-game override has temporarily put in the kernel. Seeded from state.txt
+ * per-game override has temporarily put in the kernel. Seeded from config.txt
  * at boot and updated when the player changes the mode with no game running.
  */
 extern int32_t g_globalInterval;
 
-/* Overlay mode and position (state.txt `hud=` and `hudpos=`), owned by the
+/* Overlay mode and position (config.txt `hud=` and `hudpos=`), owned by the
  * shell and mirrored into the kernel so the helper knows whether to push
  * stats. See hud.h. */
 extern int32_t g_hudMode;
@@ -27,6 +27,10 @@ extern int32_t g_lowLatency;
 extern int32_t g_jit;
 extern int32_t g_softcap;
 extern int32_t g_tear;
+
+/* `log=1`: the helper writes rate lines to helper.log. No menu row; the
+ * shell only carries it through its config.txt rewrites. */
+extern int32_t g_rateLog;
 
 /* Called by ~Impose so the shell re-arms for the next quick menu open.
  * Defined in main.cpp, which owns the open/closed flag. */

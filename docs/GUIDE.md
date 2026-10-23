@@ -1,237 +1,567 @@
-# fpsvita user guide: vsync, caps, latency options and the overlay
+# fpsvita user guide
 
-This is the long version of the README. It assumes nothing about how a console draws frames.
+For players who have installed fpsvita (see the [README](../README.md)): what each option
+does, what the overlay says, and how to report a game.
 
-## 1. Vsync
+- [How a frame reaches the screen](#how-a-frame-reaches-the-screen)
+- [The quick menu](#the-quick-menu)
+- [Options](#options)
+- [What to try first](#what-to-try-first)
+- [Overlay reference](#overlay-reference)
+- [Troubleshooting](#troubleshooting)
+- [Settings files](#settings-files)
+- [Lite mode](#lite-mode)
+- [Reporting a game](#reporting-a-game)
 
-The Vita's screen refreshes 60 times a second. Between two refreshes there is a short gap
-called the **vblank**. A game that wants smooth, tear-free motion finishes drawing a frame,
-hands it to the display, and then **waits for the next vblank** before starting the next one.
-That wait is vsync. On the Vita it is a function call (`sceDisplayWaitVblankStart` and its
-variants), and the game chooses how many vblanks to wait: one for 60 fps, two for 30 fps,
-three for 20 fps.
+## How a frame reaches the screen
 
-Three things follow from this:
+### Refresh and vblank
 
-- **The wait sets the frame rate.** A game that waits two vblanks per frame runs at 30 fps no
-  matter how fast it could draw. fpsvita works by changing that number.
-- **Many games tie their speed to the wait.** Older engines and many ports advance the world by
-  a fixed step per frame instead of by measured time. Change the wait from two vblanks to one
-  and the game runs at 60 fps **and** twice as fast: enemies, music cues, timers, physics.
-  Lower the wait instead and the same game plays in slow motion. On those games only Default is
-  right. There is no way to tell from outside; the `(og:..)` value in the menu tells you what
-  the game asked for, and the overlay tells you what it got. The
-  [compatibility list](compatibility-list.md) has the games known to be fine at a given limit
-  and the ones reported speed-tied. If a game feels wrong at a new limit, put it back.
-- **Waiting is also where input latency hides.** The game reads the controller, simulates,
-  draws, submits, then waits. Everything it read at the start of the frame reaches the screen
-  one or more frames later. The latency options below all move the read closer to the screen.
+The Vita's screen redraws itself about 60 times a second (59.94 Hz), once every 16.7 ms. Each
+redraw is a **refresh**. Between two refreshes there is a short pause, the **vertical blank**
+or **vblank**.
 
-### Games that do not wait
+A game draws each frame into memory, then hands it to the display. Showing the new frame is
+called a **flip**. Flips normally happen at a vblank, so the screen never shows the top of one
+frame and the bottom of the next. A flip in the middle of a refresh shows exactly that: a seam
+across the picture, called **tearing**.
 
-Some titles never call a vblank wait. They submit a frame and immediately start the next one,
-relying on the display driver to hold them back when its queue is full. For those, changing the
-wait count does nothing. fpsvita's **Vsync** option (inject) adds a wait of its own around the
-present. With
-auto-detect on (default) it engages when no wait has been seen for 30 presents **and** the game
-is presenting at least 10 percent faster than the cap would allow, and releases after a long
-run of paced presents. The second condition stops it from stacking a wait on a game that
-something else is already pacing, for example another plugin's frame-rate patch.
+### The wait sets the frame rate
 
-## 2. Frame-rate limit
+A game paces itself by waiting for vblanks. If it waits for every vblank, it runs at 60 fps.
+If it waits for every second one, 30 fps. Every third, 20 fps. The rate a game asks for is its
+**own rate**; the quick menu shows it as `og:30` or `og:60`.
 
-| Mode | What the helper does | Use it for |
-|------|----------------------|------------|
-| Default | Nothing. Every call chains straight through. | The default. Anything that works. |
-| 60fps | Every display wait becomes a one-vblank wait. | Games that run at 30 by choice but draw fast enough for 60, and do not tie speed to the frame. |
-| 30fps | Two vblanks. | A 60 fps game that drops frames unevenly and keeps its own time; a steady 30 feels better than 45 to 60. |
-| 20fps | Three vblanks. | Heavy ports that cannot hold 30. |
-| Uncapped | Display waits return at once. The panel still shows one complete frame per refresh, the newest one. | Measuring what the game can draw, and games with their own timers that benefit from more frames. Never for speed-tied games. |
-| Tearing | Uncapped, and every flip takes effect immediately, mid-refresh. | The lowest latency the hardware allows, at the cost of visible seams. Needs the kernel module. |
+fpsvita's frame limits change how long that wait lasts. At a limit of 30, every wait the game
+makes lasts two vblanks. At Uncapped, the wait returns at once. Because a limit works through
+vblanks, it comes in steps: 60, 30 or 20. The [Limiter](#limiter) reaches other rates with a
+timer instead.
 
-"Default" rather than "Off" because on PC and the Steam Deck "limit off" means uncapped.
+### Why some games break at another frame rate
 
-**Save** writes the whole row set for the running title into the state file as its profile;
-the helper applies it at every later launch, and restores the globals when the game exits.
+Many games move their world forward by a fixed step each frame: a car travels a set distance
+per frame, a timer counts frames. A game built this way for 30 fps runs at double speed at 60
+and in slow motion at 20. Other games measure the time between frames and stay at the right
+speed at any rate.
 
-A capped wait is issued through the helper's own copy of the wait function rather than by
-changing the count on the game's own call. On one homebrew port (Doom64EX) the latter returned
-at once and removed all pacing; the former holds.
+You cannot tell which kind a game is from outside it. The FPS counter looks right either way:
+a speed-tied game happily reaches 60 fps while everything moves twice as fast. Only your eyes
+tell you. Nothing outside the game can fix this, so fpsvita cannot either.
 
-## 3. The latency options
+`Default` leaves the game's own pacing alone and is always safe. The
+[compatibility list](compatibility-list.md) collects known results.
 
-These live on the quick menu's Latency row and in `ur0:data/fpsvita/config.txt` (defaults) or
-on the title's line in `state.txt`. With a game running, a change applies to that title and is
-kept by **Save**; with no game running it sets the global default. Anti-lag and the Limiter act
-on the next frame. Lowlat is applied once when the game initialises graphics, so a change made
-mid-game waits for the next launch, and the overlay says so: `RESTART GAME` (Mini: `LL?`)
-after turning it on, `ON UNTIL RESTART` after turning it off. A game that already runs a
-one-deep queue by itself shows `ON (GAME'S OWN)`; the option changes nothing there.
+### Where input latency hides
 
-### Lowlat (`lowlat=1`): one frame less in the display queue
+Input latency is the time from pressing a button to seeing the result. A frame passes
+through five steps on its way to the screen, and each adds some:
 
-The Vita's graphics library keeps a queue of finished frames waiting to be shown. Sony's
-samples and most games allow two in flight. That second slot is a full frame of latency
-(16.7 ms at 60, 33 ms under a 30 limit) bought purely as tolerance for a slow frame. fpsvita
-sets the queue depth to one when the game initialises graphics.
+1. **Read.** The controller is sampled once per refresh. The game reads the newest sample.
+   Many games read right after a refresh begins, a moment before the new sample lands, so the
+   sample they get is already a whole refresh (16.7 ms) old.
+2. **Simulate and render.** The CPU runs the game logic and prepares the frame. The overlay
+   shows this as CPU time.
+3. **Submit.** The game hands the finished frame to the display queue.
+4. **Queue.** The frame waits for its turn. The Vita's usual queue holds two frames, which
+   adds 16 to 33 ms.
+5. **Flip.** At the next vblank the frame is shown, and the panel draws it top to bottom.
 
-- **Gain:** up to one frame, on titles that actually keep the second slot full. Dead or Alive 5
-  Plus at 60 gained 18 ms; on MGS2 HD and The Wolf Among Us the `INPUT` number barely moved.
-- **Cost:** a frame that takes longer than usual now stalls the game instead of being absorbed
-  by the queue, so a title that was just holding its rate may start dropping frames.
-- **Not every title can take it.** Some homebrew ports initialise graphics in a way the helper
-  cannot intercept; on those the overlay keeps saying `RESTART GAME` after a relaunch, and
-  the option simply has no effect.
+A typical game at a 30 limit shows input that is 25 to 55 ms old by the time the panel starts
+drawing it. The overlay's INPUT row measures this from the sample to the flip.
 
-### Anti-lag (`antilag=auto` or `antilag=1`): just-in-time input
+Antilag works on step 1, Lowlat on step 4 and Tearing on step 5.
 
-The controller is sampled once per vblank, and the new sample becomes visible 0.5 to 1.5 ms
-after it. Most games poll input right after the previous frame was submitted, which is right
-after the vblank: a hair before the new sample lands. They lose that race every frame and play
-on input a whole frame old. Anti-lag does two things:
+### Games that never wait
 
-`auto` (the fresh-install default) enables only the fresh poll. `1` enables the fresh poll
-and the whole-vblank sleep; the sleep is the part that can cost frames, so it stays explicit.
-Under auto the quick-menu checkbox shows ticked: untick it for off, tick it again for full.
-Getting back to auto means setting `antilag=auto` in `config.txt`, or on the title's line in
-`state.txt`, by hand.
+Some games never make the vblank wait. They render as fast as they can and flip, or keep time
+with a timer of their own. A limit that changes the wait does nothing to such a game, so
+fpsvita can add a wait after each frame instead: that is [Vsync](#vsync).
 
-- **Fresh poll.** When a read returns a sample that is nearly a vblank old, the helper re-polls
-  until the new one is in, 2.5 ms at most. Measured: 0.2 to 0.5 ms of spin, never a timeout,
-  and 5 to 14 ms less input-to-screen (11 to 14 on most retail titles measured) on every
-  title where the game polls that way.
-- **Whole-vblank sleep.** Under a 30 or 20 limit, if the frame would otherwise sit in the
-  display queue for a vblank or more, the helper holds the submitting thread that long first, so
-  the poll lands on a later sample. It measures the queue time itself and only sleeps time that
-  was idle anyway; if flips start landing later it backs off for 60 frames and relearns. On
-  MGS2 HD at 30 the two together cut 17 to 24 ms. At a 60 limit it never sleeps.
+## The quick menu
 
-- **Self-retreating:** a frame that misses its deadline while the sleep is on gates it for 60
-  frames and restarts the warm-up. A game that cannot hold its limit gets no sleep at all.
-- **Cost:** a sub-millisecond spin per controller read on games that poll on a stale sample;
-  a vitaGL port that polls twice a frame pays about 3 ms, which it only notices if it is CPU
-  bound. The sleep ends with 0.3 ms of busy-waiting for precision.
-- **Does nothing for** games that poll mid-frame (The Simpsons: Hit & Run): no sample is ever about to land
-  when they read.
-
-### Limiter (`limiter=<fps>`): a time-based cap without vsync
-
-In Uncapped mode the display waits return at once. The Limiter holds the submitting thread to
-a fixed schedule: each slot is `1/fps` after the previous slot, so the average rate is the cap
-exactly. A frame late by less than a period gets a shorter next slot and the schedule catches
-up; a frame later than that restarts the schedule instead of bursting. The display shows
-whatever is newest at each refresh.
-
-- **Gain:** a stable rate, and the game's input read is not tied to the vblank, which on some
-  titles is lower latency than the real limit.
-- **Cost:** frames are not aligned to refreshes, so motion can judder slightly even at a
-  steady 30. The schedule keeps the rate, not a phase lock to the refresh.
-- **Use it for** titles that cannot be vblank-paced at all (Doom64EX at 30 was the test case)
-  or when you want 40, 45 or 50 rather than 30 or 60. Only active in Uncapped (or Tearing) mode.
-
-### Tearing (`tearing=1` with Uncapped)
-
-Sony's user-mode display call refuses immediate flips; the kernel module's does not. In Tearing
-mode every flip takes effect at once, so the panel starts showing the new frame mid-refresh
-with a visible seam, as on a PC with vsync off. It is the only way to get a frame on screen
-in less than a refresh. Pair it with the Limiter if the game's uncapped rate is wild.
-
-### Which to try first
-
-1. Limit the game to the rate it can actually hold. Uneven frame times are the biggest latency
-   source and nothing below fixes them.
-2. Anti-lag. `auto` is the fresh-install default (fresh poll only); `1` adds the
-   whole-vblank sleep. Cheap, and on most games it is worth a frame of input latency outright.
-3. Lowlat. Check the `INPUT` number before and after; on many titles it changes nothing.
-4. The Limiter and Tearing are tools for games that cannot be limited the normal way, or for
-   when latency matters more than a clean image.
-
-## 4. Reading the overlay
-
-Mini is two green lines without a box; Full is a box in PSVshellPlus's style with a label
-and a value per row.
+Hold the PS button to open the quick menu. fpsvita adds three rows:
 
 ```
-30 FPS  LIMIT 30 / OG:60            FPS:        29.9 / 33.4 ms
-VSYNC  LL  AL+                      LIMIT:          30 / OG:60
-                                    CPU:                 4.8 ms
-                                    INPUT:              15.5 ms
-                                    QUEUE:              11.8 ms
-                                    ANTI-LAG:       16.7 ms / 2
-                                    LOW LAT:                 ON
-                                    LIMITER:                OFF
-                                    TIP:                   NONE
-                                    LAST:        ANTI-LAG 40>16 MS
-                                    TITLE:            PCSE00078
+[icon] FPS:  < 30fps (og:60) (!) >           Limiter:  < off >
+       HUD:  < Full >                         Corner:  < BL >
+   Latency:  [x] Lowlat  [x] Antilag        Vsync [x]   [Save]
 ```
 
-| Item | Meaning |
-|------|---------|
-| `FPS` | Presents per second the game is achieving, and the frametime, averaged over the last second or so. Under a 30 limit it should read 29.9 to 30.0. A value well above the limit means the limit is not taking (no display wait to hook, vsync not engaged). |
-| `LIMIT` | The mode in force for this title after its profile, then the rate the game asked for by itself (`30 / OG:60`: limited to 30, original 60). The original part is absent when the game never waited; on a title with another plugin's frame-rate patch it is that patch's number. `TEARING (NO KERNEL)` means the mode is set but the kernel module is not there to honour it. |
-| Mini line 2 | What is active, in short form: `VSYNC` the helper adds its own vblank wait around the present (manual or auto-detected); `LL` Lowlat on, `LL?` requested for the next launch; `AL` Anti-lag auto, `AL+` full; `LIM 40` the Limiter. |
-| `CPU` | Time the game spends per frame on its submitting thread: poll input, simulate, build the frame, hand it to the GPU. The idle time waiting for the display is excluded. Compare with the frame budget (16.7 ms at 60, 33.4 ms at 30). Shows `-` on the few titles where the submit call is not hooked. |
-| `INPUT` | The number that matters: from the newest controller sample the game had when it submitted a frame to that frame's flip. Everything but the panel's own response. Anti-lag should lower it; compare with and without. |
-| `QUEUE` | The same frame's submit-to-flip. Around one period means the display queue is holding a frame; that is the time anti-lag's sleep can reclaim and what Lowlat is meant to cut. |
-| `ANTI-LAG` | `OFF`; `AUTO` when only the fresh poll is enabled; `ON / 2` when full Anti-lag is on but no sleep is in force; `16.7 ms / 2` when the whole-vblank sleep is on. The count is frames that ran over budget while the sleep was on; each one gates it for 60 frames, so a climbing count means the game cannot afford it. |
-| `LOW LAT` | `ON`: the display queue was clamped to one frame at startup. `RESTART GAME`: requested, applies at the next launch. `ON UNTIL RESTART`: turned off, still clamped until the next launch. `ON (GAME'S OWN)`: the title runs a one-deep queue by itself. |
-| `LIMITER` | Uncapped with a time-based limit active; `(NEEDS UNCAPPED)` when set under a vsync limit. |
-| `TIP` | What the readings say is worth trying next, one suggestion at a time: `60 NOT HELD, TRY 30` (or `30 NOT HELD, TRY 20`, `20 NOT HELD`) when the game runs a tenth under its limit; `TRY FULL ANTI-LAG` when the game plays on a sample at least 10 ms old or, at a 30 or 20 limit, lets a frame sit a vblank in the queue while its CPU work leaves room for a vblank of sleep; `TRY LOW LAT` when the queue still holds most of a frame. When none of those applies and the [compatibility list](compatibility-list.md) names a problem for this title at the selected limit, the tip is that problem: `NO INPUT ABOVE 59` (60 or Uncapped, until the title has `read=peek`), `FREEZES, USE DEFAULT`, `SHIP SHAKES WITH CAP`, `VIDEOS BREAK AT 60`, `MENUS RUN FAST`, `SLOW MOTION AT 20` or `SPEED TIED TO FPS`; the quick menu marks the same case with `(!)` next to the FPS row. `NONE` when nothing measurable is left; `...` for three seconds after a launch or a change while the averages settle. A different tip has to hold for five seconds before it replaces the one shown, so a scene change does not flip it. No tip predicts a number: toggle it and read `LAST`. |
-| `LAST` | Before and after of the last thing you toggled, once it has settled: `ANTI-LAG 40>16 MS` is `INPUT` before and after. When the change cost more than 5 percent of the frame rate the loss replaces the unit (`ANTI-LAG 40>16 -3FPS`). A Lowlat toggle shows `LOW LAT: RESTART` until the same title has been relaunched, and `LOW LAT: NOT SAVED` if it came back without the toggle (press Save before quitting; a toggle with a game running is not stored otherwise). |
-| `TITLE` | The title id the numbers belong to. |
+| Control | Values | Takes effect |
+|---|---|---|
+| FPS | Default, 60fps, 30fps, 20fps, Uncapped, Tearing | At once |
+| `(!)` | Shown when the [compatibility list](compatibility-list.md#probably-incompatible) names a problem for this game at the selected limit. A limit equal to the game's own rate counts as safe. | |
+| Limiter | off, 20, 24, 25, 30, 40, 45, 50, 60 | At once, only at Uncapped |
+| HUD | Off, Mini, Full | At once |
+| Corner | TL, TR, BL, BR (overlay position) | At once |
+| Lowlat | Ticked or not | At the game's next launch |
+| Antilag | Ticked or not | At once |
+| Vsync | Ticked or not. Shown only when Vsync is forced in `config.txt` | At once, saved at once |
+| Save | Shown only while a game runs | |
 
-All values are exponential moving averages, so they take about a second to settle after a
-scene change, and the whole overlay hides itself when no game is running.
+### With a game running
 
-## 5. Things that go wrong
+FPS, Limiter, Lowlat and Antilag change this game only. The changes last until the game
+exits. Press **Save** to keep them: Save writes this game's profile, which loads at every
+launch of the game.
 
-- **Game runs at double speed at a higher limit.** Speed-tied engine. Use Default; Save it per
-  game so it never happens again.
-- **Game plays in slow motion at a lower limit.** The same thing the other way. Use Default.
-- **Limit shows but fps reads far above it.** The title never waits and vsync has not engaged
-  (fewer than 30 presents without a wait, or the game is not actually faster than the limit).
-  Give it a few seconds; if it persists the title needs vsync forced: `vsync=1` in
-  `config.txt`, or `vsync=0` to show the checkbox and tick it when needed. Forced vsync is a
-  global setting; it is not stored in a title's profile.
-- **Stutter after turning on anti-lag.** The game's frame time is spiky. The sleep should
-  retreat on its own; if the stutter stays, the spikes are shorter than the retreat window.
-  Turn anti-lag off for that title.
-- **Frame drops after Lowlat.** The title was relying on the second queue slot. Turn it off,
-  or limit lower.
-- **Tearing mode looks like Uncapped.** The overlay says `TEARING (NO KERNEL)`: the lite helper
-  or a missing kernel module. The full three-module install is required.
-- **Two frame-rate plugins.** Framecapper and fpsvita must not run together. Frame-rate
-  patches from other plugins coexist and show as the `(og:..)` value.
-- **The quick menu row is missing after a boot.** Check `ur0:data/fpsvita/boot.log`; if SceShell
-  crashed, hold L at power-on and comment the `fpsvita-ui` line out of `config.txt`.
+Save stores the FPS row (including Tearing), Lowlat, Antilag and Limiter. It does not store
+HUD, Corner or Vsync, which are global.
 
-## 6. The files
+### With no game running
 
-Both live in `ur0:data/fpsvita/`, are written by the quick menu and read by the helper when a
-game starts. A hand edit to `state.txt` takes effect at that title's next launch. The quick
-menu reads `config.txt` once at boot and rewrites the whole file on every change, so a hand
-edit there needs a reboot, or the next menu change writes over it.
+Every change is the global default and is saved at once. The Save button is hidden. Global
+defaults apply to every game that has no profile of its own, and to any option a profile
+leaves out.
 
-`config.txt`, the global defaults, regenerated whole on every change:
+HUD, Corner and Vsync are always global and always saved at once.
 
-| Key | Values |
-|-----|--------|
-| `limit=` | -1 Default, 1 60fps, 2 30fps, 3 20fps, 0 Uncapped |
-| `vsync=` | `auto` (default): forced vsync engages by itself on titles that never wait; `0` or `1`: forced off or on, and the Vsync checkbox is shown |
-| `hud=` | Overlay: 0 Off, 1 Mini, 2 Full |
-| `hudpos=` | Overlay corner: 0 TL, 1 TR, 2 BL, 3 BR |
-| `lowlat=` | 0 or 1. Display queue depth forced to 1 at game start. |
-| `antilag=` | `auto` (default on a fresh install): fresh poll only. `1`: fresh poll and the whole-vblank sleep at a 30/20 limit. `0`: off. |
-| `limiter=` | fps, 0 off. Time-based cap in Uncapped mode. |
-| `tearing=` | 0 or 1. With `limit=0`, every flip IMMEDIATE. |
+## Options
 
-`state.txt`, one line per title, written by Save:
+Each option below says what it does, when it helps, what it costs and when it does nothing.
+The measured numbers come from [latency measurements](latency-measurements.md).
+
+### Frame limits
+
+**What it does.** `60fps`, `30fps` and `20fps` make every wait last one, two or three
+vblanks. `Uncapped` makes waits return at once. `Default` leaves the game alone, and
+`Tearing` is Uncapped with immediate flips (see [Tearing](#tearing)).
+
+**When it helps.** A game that cannot hold its own rate can run steadily at a lower limit,
+and a game with spare power can run faster. Both only if its speed does not follow the frame
+rate. Setting the limit to a game's own rate (`30fps` for a game showing `og:30`) does not
+change its speed, and lets full [Antilag](#antilag) do more.
+
+**What it costs.** A speed-tied game runs too fast or too slow
+([why](#why-some-games-break-at-another-frame-rate)). A limit the game cannot reach drops
+frames instead; the overlay's TIP row then says `30 NOT HELD, TRY 20`.
+
+**When it does nothing.** A game that keeps time without the vblank wait ignores the limit
+(Persona 4 Golden stays at 30 under a 60 limit). Vsync can add a wait for games that never
+wait.
+
+### Vsync
+
+**What it does.** Adds a wait of the limit's length after each frame, for games that never
+wait on their own.
+
+- `auto` (the default): on when the game has not waited for 30 frames and runs at least 10%
+  faster than the limit; off again after 60 frames in a row that follow a wait of its own.
+- `vsync=1`: always on at a 60, 30 or 20 limit. `vsync=0`: never.
+
+**When it helps.** Games that run uncapped by design and need a limit, such as Dragon Quest
+Builders, Minecraft and The Amazing Spider-Man at 30 (see the
+[compatibility list](compatibility-list.md#from-patch-lists)).
+
+**What it costs.** In auto, nothing for a game that paces itself. Forced on, a game that
+already waits gets a second wait and can fall to a lower rate.
+
+**When it does nothing.** At Default and Uncapped, where the checkbox is greyed out. The
+checkbox only appears when `vsync=0` or `vsync=1` is set; Mini shows `VSYNC` while the wait is
+active.
+
+### Antilag
+
+Antilag has two forms: **auto** (the default) is the fresh poll only; **full** adds a sleep
+at 30 and 20 limits. The checkbox is ticked for either. Unticking turns Antilag off, and
+ticking turns on full. Auto comes back only through `antilag=auto` in
+[config.txt](#configtxt) or the game's [state.txt](#statetxt) line.
+
+**What it does.**
+
+- *Fresh poll.* When the sample the game just read is nearly a refresh old, the next one
+  lands within about 2 ms. fpsvita reads again for up to 2.5 ms and hands the game the new
+  sample.
+- *Sleep (full only).* At a 30 or 20 limit, after the game submits a frame, fpsvita holds the
+  game's thread for whole refreshes before it continues. The game's next read then happens
+  later, and the fresh poll catches a newer sample. The sleep only spends time the frame would
+  otherwise wait in the queue, so the flip does not move. It only runs on games that read
+  input right after submitting. A frame that misses its slot turns the sleep off for 60
+  frames, after which it learns again.
+
+**When it helps.** Games that read input right after a refresh begins. The fresh poll gained
+5 to 14 ms where it applies, 11 to 14 ms on most retail titles tested. Full Antilag gained
+17 to 24 ms on Metal Gear Solid 2 HD at 30.
+
+**What it costs.** The fresh poll spins 0.2 to 0.5 ms per read. A game that reads twice per
+frame pays about 3 ms of CPU per frame (Galaxy on Fire 2, no frames lost). The full sleep can
+cost an occasional missed frame, which switches it off for 60 frames; the overlay's ANTI-LAG
+count climbs when that keeps happening, which means the game cannot afford the sleep.
+
+**When it does nothing.**
+
+- A game that reads input mid-frame (The Simpsons: Hit & Run), or one that already gets fresh
+  samples.
+- The sleep: at Default, 60fps and Uncapped, while Vsync's wait is active, and when the frame
+  has no whole refresh to spare.
+- A game that reads several samples at once with a blocking read skips the fresh poll, unless
+  its profile has [`read=peek`](#statetxt).
+
+### Lowlat
+
+**What it does.** Makes the game's display queue one frame deep instead of two, at the moment
+the game starts its graphics.
+
+**When it helps.** When frames sit in the queue: the overlay's QUEUE close to the frame time,
+and TIP says `TRY LOW LAT`. Dead or Alive 5 Plus at 60 went from 38 to 20 ms with Antilag on.
+
+**What it costs.** Less slack for a slow frame, so a game near its limit can lose frames.
+Watch FPS and the LAST row.
+
+**When it does nothing.**
+
+- A game that already uses a one-frame queue. The overlay shows `ON (GAME'S OWN)`.
+- A game that sets up its graphics outside the call fpsvita hooks, such as Doom64EX. The
+  overlay keeps showing `RESTART GAME`.
+- Where frames do not wait in the queue: on Metal Gear Solid 2 HD and The Wolf Among Us INPUT
+  barely moved.
+
+**Applying it.** The change takes effect at the game's next launch. Tick Lowlat, press Save,
+then quit and restart the game. Without Save, the relaunch uses the old setting and the LAST
+row reads `LOW LAT: NOT SAVED`.
+
+### Limiter
+
+**What it does.** At the Uncapped limit, holds the game to a fixed rate with a timer: 20, 24,
+25, 30, 40, 45, 50 or 60 fps (any value from 10 to 120 through `config.txt`). The average
+rate is exact.
+
+**When it helps.**
+
+- Rates between the vblank steps, such as 40 or 45 for a game that cannot hold 60 but runs
+  well above 30.
+- Games that a normal limit cannot hold at all, because they never wait and Vsync does not
+  catch them: set FPS to Uncapped and the Limiter to the rate you want (Doom64EX at 30 was the
+  test case). The game's input read is then not tied to the vblank, which on some games
+  lowers latency too.
+
+The speed caveat applies as for any limit ([why](#why-some-games-break-at-another-frame-rate)).
+
+**What it costs.** The timer is not tied to the refresh. At 40 fps, frames stay on screen for
+one or two refreshes in turn, so motion is less even than at 30 or 60. With Tearing they show
+at once, with seams.
+
+**When it does nothing.** At any limit other than Uncapped (the overlay shows
+`40 FPS (NEEDS UNCAPPED)`), and when the game cannot reach the rate.
+
+### Tearing
+
+**What it does.** Uncapped, plus every flip takes effect at once instead of at the next
+vblank. The newest frame reaches the screen without waiting.
+
+**When it helps.** Games running above 60 fps, or at Limiter rates, where waiting for the
+vblank delays each frame. On Doom64EX's intro, the game's wait for a frame to be shown
+completed 563 times a second with Tearing, against 43 with normal flips.
+
+**What it costs.** Visible seams. The speed caveat of Uncapped applies.
+
+**When it does nothing.** In [lite mode](#lite-mode), which has no kernel module. When the
+immediate flips fail, fpsvita falls back to normal flips and the overlay shows
+`TEARING (NO KERNEL)`.
+
+### Panel refresh (experimental)
+
+**What it does.** Runs the screen at a lower refresh rate, from 24 to 59 Hz, while one game
+runs. Set it per game with `,panel=<hz>` on the game's [state.txt](#statetxt) line; there is
+no quick-menu control. The limits then count in the new refreshes: at `panel=40` the `60fps`
+limit is an even 40 fps, one frame per refresh. The normal 59.94 Hz returns when the game
+exits or another one starts.
+
+**When it helps.** A game that cannot hold 60 but runs well above 30, where the Limiter's
+uneven frame times bother you. Unlike the Limiter, every frame stays on screen for exactly one
+refresh. It suits best:
+
+- Games that keep their own time and run somewhere between 35 and 55 fps with headroom to
+  spare. Absolute Drift at 40 Hz held a steady 40 fps with 12 ms of CPU per frame and looked
+  very smooth.
+- Slower-paced games (exploration, adventure, driving, third-person action) where smooth
+  motion matters more than the last few milliseconds of input.
+
+**Pick a rate the game holds in its heaviest scenes**, then check the overlay: FPS should read
+the panel rate, not just under it. A game that misses a refresh holds that frame for two, and
+at 40 Hz that alternates 25 and 50 ms frames, which looks choppier than a steady 30. Doom64EX
+at 40 Hz averaged 37 to 38 fps and looked worse than 30. If FPS sits under the panel rate,
+lower `panel=` a few Hz.
+
+It suits poorly:
+
+- Speed-tied games: a lower refresh is permanent slow motion.
+- Fast, timing-critical games (fighting, rhythm, competitive shooters): input latency rises.
+- Games that already hold 60, or that hold 30 by themselves (at Default a game that waits two
+  refreshes gets half the panel rate, 20 fps at 40 Hz).
+
+**What it costs.** The controller is sampled once per refresh, so input latency rises:
+Doom64EX at 40 Hz measured about 61 ms from input to screen, against about 34 ms at 60.
+
+**Limits.** Tested on the OLED Vita (PCH-1000), firmware 3.65, including sleep and resume
+while a game runs at a panel rate. The Slim (PCH-2000) drives its LCD with the same timing, so
+fpsvita applies it there too, but it is untested: if the screen flickers or goes black, quit
+the game (the normal rate returns) or reboot, and please [report](#reporting-a-game) what you
+saw. A PS TV has no panel, and fpsvita leaves any display it does not recognise alone. Lite
+mode cannot use it (no kernel module). The overlay shows `40HZ` (Mini) or `@40HZ` on the LIMIT row (Full) when it is in force,
+and `helper.log` logs `helper: panel want=40 got=40` at launch; `got=0` means it was refused.
+
+## What to try first
+
+1. Set HUD to `Full` and play. Note INPUT and watch the TIP row.
+2. Leave Antilag on auto. If TIP says `TRY FULL ANTI-LAG`, untick and tick Antilag to turn on
+   full Antilag. For a game whose own rate is 30 or 20 (`og:30`), set the FPS row to that
+   rate first: speed stays the same, and the full sleep can work.
+3. If TIP says `TRY LOW LAT`, tick Lowlat, Save and relaunch the game.
+4. Read LAST after each change. Keep what helped and press Save.
+5. Try a frame limit only after checking the [compatibility list](compatibility-list.md), and
+   judge the game's speed by eye.
+6. Treat Limiter and Tearing as experiments.
+
+## Overlay reference
+
+The overlay appears over a running game when HUD is `Mini` or `Full`, and hides when no game
+runs. Its numbers are smoothed averages, updated about four times a second.
+
+### Mini
+
+Two lines:
 
 ```
-PCSE00078=2,lowlat=0,antilag=auto,limiter=0,tearing=0
+30 FPS  LIMIT 30 / OG:60
+LL  AL
 ```
 
-A plain `TITLEID=<limit>` line also works; the globals then apply to that title. A trailing
-`,read=peek`, added by hand, turns the title's blocking `sceCtrlRead*` calls into the matching
-`sceCtrlPeek*`, a fix for titles that lose input above their own rate; Save keeps it. Lines for
-titles the quick menu does not know about are kept as they are.
+The first line is the frame rate and the limit: `LIMIT 30`, `DEFAULT`, `UNCAPPED`, `TEARING`
+or `TEARING (NO KERNEL)`, followed by `/ OG:60` once the game's own rate is known.
+
+The second line lists what is active:
+
+| Shown | Meaning |
+|---|---|
+| `VSYNC` | Vsync's wait is active |
+| `LL` | A one-frame queue is in effect, from Lowlat or from the game itself |
+| `LL?` | Lowlat is ticked and applies at the next launch |
+| `AL` | Antilag auto |
+| `AL+` | Full Antilag |
+| `LIM 40` | The Limiter is holding 40 fps |
+| `40HZ` | [Panel refresh](#panel-refresh-experimental) at 40 Hz |
+
+### Full
+
+| Row | Shows | Examples |
+|---|---|---|
+| FPS | Frames per second / time per frame | `30.0 / 33.3 ms` |
+| LIMIT | The limit / the game's own rate | `30 / OG:60`, `30 FPS`, `DEFAULT / OG:60`, `UNCAPPED`, `TEARING`, `TEARING (NO KERNEL)`; with panel refresh `40 @40HZ` |
+| CPU | CPU time per frame, without time spent waiting for the queue | `11.1 ms` |
+| INPUT | Age of the newest controller sample the frame had, at that frame's flip | `22.1 ms` |
+| QUEUE | Time from submitting the frame to its flip | `8.7 ms` |
+| ANTI-LAG | Antilag state | see below |
+| LOW LAT | Lowlat state | see below |
+| LIMITER | `40 FPS`, `40 FPS (NEEDS UNCAPPED)` or `OFF` | |
+| TIP | Advice from the readings | see [TIP](#tip) |
+| LAST | Your last change, before and after | see [LAST](#last) |
+| TITLE | The game's title ID | `PCSE00078` |
+
+A row shows `-` until it has a measurement. CPU stays `-` on a game that does not submit
+frames through the call fpsvita hooks. INPUT does not include the panel's own response time.
+
+ANTI-LAG reads `OFF`, `AUTO`, `ON / 0` (full, not sleeping now) or `16.6 ms / 0` (full,
+sleeping that long each frame). The number counts frames that missed their slot while
+sleeping.
+
+LOW LAT reads `ON`, `OFF`, `ON (GAME'S OWN)` (the game uses a one-frame queue itself),
+`RESTART GAME` (ticked, applies at the next launch) or `ON UNTIL RESTART` (unticked, the queue
+stays short until the game restarts).
+
+### TIP
+
+TIP suggests one thing to try. It shows `...` for 3 seconds after a launch or a change, while
+the averages settle. A new tip must hold for 5 seconds before it replaces the one shown. The
+first rule that matches wins:
+
+| Order | Tip | When |
+|---|---|---|
+| 1 | `30 NOT HELD, TRY 20` | The game runs under 90% of the limit. At 20 it reads `20 NOT HELD`. |
+| 2 | `TRY FULL ANTI-LAG` | Antilag is off and the sample is 10 ms old or more, or full Antilag is off at a 30 or 20 limit with a refresh of queue time and room for the sleep. |
+| 3 | `TRY LOW LAT` | Lowlat is off and the frame spends 80% of its time in the queue. |
+| 4 | A known problem | The [compatibility list](compatibility-list.md#probably-incompatible) names one for this game at this limit, and the limit is not the game's own rate. |
+| 5 | `NONE` | Nothing to suggest. |
+
+The known problems read: `NO INPUT ABOVE 59`, `FREEZES, USE DEFAULT`, `SHIP SHAKES WITH CAP`,
+`VIDEOS BREAK AT 60`, `MENUS RUN FAST`, `SLOW MOTION AT 20` and `SPEED TIED TO FPS`.
+
+### LAST
+
+LAST compares INPUT before and after your last change to the limit, Lowlat, Antilag, the
+Limiter or Tearing. It is how you find out whether a change helped on your game.
+
+| Shown | Meaning |
+|---|---|
+| `-` | No change yet |
+| `ANTI-LAG ...` | Changed, waiting 3 seconds for the averages to settle |
+| `ANTI-LAG 38>27 MS` | INPUT went from 38 to 27 ms |
+| `LIMIT 30>22 -3FPS` | INPUT before and after, and the frame rate fell by 3 fps. Shown instead of `MS` when it fell by more than 5% |
+| `LIMIT 30>60 FPS` | No INPUT measurement, so the frame rate before and after |
+| `LOW LAT: RESTART` | Lowlat changed; relaunch the game to measure it |
+| `LOW LAT: NOT SAVED` | The game relaunched without the change, because Save was not pressed |
+
+The names are `LIMIT`, `LOW LAT`, `ANTI-LAG`, `LIMITER` and `TEARING`.
+
+A change counts only while the game presents frames before and after it, and changes in the
+first second after a launch (when the profile loads) are ignored.
+
+## Troubleshooting
+
+**No fpsvita rows in the quick menu.**
+The quick-menu plugin quits when the `.rco` file or the kernel module is missing. Check
+`ur0:data/fpsvita/fpsvita_plugin.rco`, the `*KERNEL` line, and that you edited the taiHEN
+config taiHEN actually reads (`ux0:tai/config.txt` wins when it exists).
+`ur0:data/fpsvita/boot.log` names what was missing.
+
+**The Vita's shell fails at boot.**
+See [recovery](../README.md#conflicts-and-recovery) in the README.
+
+**The game runs too fast or in slow motion.**
+Its speed follows the frame rate. Set FPS to `Default` and press Save. Report it so it can go
+on the compatibility list.
+
+**A limit has no effect.**
+The game keeps time without the vblank wait. In auto, Vsync only steps in when the game runs
+at least 10% faster than the limit. Try `vsync=1` in `config.txt`, or Uncapped with the
+[Limiter](#limiter). Some games pace themselves in ways nothing outside the game can change.
+
+**FPS stays below the limit, TIP says `NOT HELD`.**
+The game cannot render that fast. Use the lower limit TIP suggests, or `Default`.
+
+**Stutter after turning on full Antilag.**
+The game's frame times are spiky. The sleep backs off by itself after a missed frame; if the
+stutter stays, untick Antilag for that game (or set `antilag=auto` on its line) and Save.
+
+**Frames drop after turning on Lowlat.**
+The game needed the second queue slot. Turn Lowlat off, or use a lower limit.
+
+**LOW LAT still shows `RESTART GAME` after a restart.**
+If LAST reads `LOW LAT: NOT SAVED`, press Save and relaunch. Otherwise the game sets up its
+graphics in a way Lowlat cannot reach.
+
+**No input at 60fps or Uncapped (Killzone: Mercenary).**
+Add `,read=peek` to the game's line in [state.txt](#statetxt).
+
+**The game freezes at 60 (Jak II).**
+Use `Default` for that game.
+
+**The overlay does not appear.**
+HUD is `Off`, or no game is running.
+
+**A change to `config.txt` was lost.**
+The quick-menu plugin reads `config.txt` only at boot and rewrites the whole file whenever you
+change a global setting. Reboot after editing it.
+
+**Save does nothing.**
+`state.txt` is over 4 KB. Save refuses to write a file it cannot read whole, so no profile is
+ever cut off. Remove lines for games you no longer play.
+
+## Settings files
+
+All files live in `ur0:data/fpsvita/`. Edit them with VitaShell's text editor.
+
+| File | Written by | Read by | An edit takes effect |
+|---|---|---|---|
+| `config.txt` | The quick-menu plugin: at first boot, and whole on every global change | The quick-menu plugin at boot, the helper at every game launch | After a reboot |
+| `state.txt` | Save: replaces or adds this game's line, keeps every other line as it is | The helper at every game launch | At that game's next launch |
+| `helper.log` | The helper, inside each game | You, and `tools/ingest_playlog.py` | |
+| `boot.log` | The quick-menu plugin | You | |
+
+### config.txt
+
+The global settings, one `key=value` per line. A fresh install writes every key with its
+default:
+
+| Key | Values | Default |
+|---|---|---|
+| `limit` | `-1` Default, `1` 60fps, `2` 30fps, `3` 20fps, `0` Uncapped | `-1` |
+| `vsync` | `auto`, `1` forced on, `0` forced off | `auto` |
+| `hud` | `0` Off, `1` Mini, `2` Full | `0` |
+| `hudpos` | `0` TL, `1` TR, `2` BL, `3` BR | `0` |
+| `lowlat` | `0`, `1` | `0` |
+| `antilag` | `auto`, `1` full, `0` off | `auto` |
+| `limiter` | `0` off, or 10 to 120 fps | `0` |
+| `tearing` | `0`, `1` (with `limit=0`) | `0` |
+| `log` | `0`, `1`: write rate lines to `helper.log` (see [collecting play logs](#collecting-play-logs)) | `0` |
+
+### state.txt
+
+One line per game, written by Save:
+
+```
+TITLEID=<limit>,lowlat=<0|1>,antilag=<0|1|auto>,limiter=<fps>,tearing=<0|1>
+```
+
+For example, Metal Gear Solid 2 HD at its own 30 with full Antilag:
+
+```
+PCSE00078=2,lowlat=0,antilag=1,limiter=0,tearing=0
+```
+
+The limit uses the same numbers as `limit=` in `config.txt`. A key missing from the line
+falls back to the global setting.
+
+`read=peek` has no quick-menu control. Add it by hand to the end of a game's line. It turns
+the game's blocking controller reads into non-blocking ones, which Killzone: Mercenary needs
+above 59 fps. Save keeps it.
+
+```
+PCSA00107=1,lowlat=0,antilag=auto,limiter=0,tearing=0,read=peek
+```
+
+`panel=<hz>` (24 to 59) is also added by hand and kept by Save; see
+[Panel refresh](#panel-refresh-experimental).
+
+`state.txt` can hold up to 4 KB.
+
+## Lite mode
+
+`fpsvita-helper-lite.suprx` is the helper alone: no kernel module, quick menu, overlay,
+Tearing or panel refresh. Copy it to `ur0:tai/` and add it under `*ALL`, without the other
+fpsvita lines or the full helper. Settings come from the same two files, written by hand in
+`ur0:data/fpsvita/`; it reads `limit`, `vsync`, `lowlat`, `antilag`, `limiter` and `log`, plus
+each game's line, at every launch, so an edit needs no reboot. With no files it uses the
+defaults.
+
+## Reporting a game
+
+Open one issue per game at
+[github.com/esp1esp1/fpsvita/issues](https://github.com/esp1esp1/fpsvita/issues). A game that
+works at a limit is as useful as one that breaks. Include:
+
+- The game's name and title ID (the overlay's TITLE row).
+- Your Vita model and firmware, and other plugins you run, especially frame-rate patches and
+  overclocking.
+- Your settings: the FPS and Latency rows, or the game's `state.txt` line.
+- What you saw. Say whether the game's **speed looked right by eye**: an FPS reading cannot
+  show a speed-tied game.
+- The overlay's FPS, CPU, INPUT, QUEUE, TIP and LAST readings. A photo works.
+- `ur0:data/fpsvita/helper.log`, and `boot.log` for quick-menu or boot problems.
+
+A report enters the [compatibility list](compatibility-list.md) with `user` confidence.
+
+### Collecting play logs
+
+With `log=1`, the helper adds a rate line to `helper.log` every 3000 frames, the first at
+frame 900. Each line holds the frame rate, frame times and latency figures under the
+settings in force. To collect them:
+
+1. Change `log=0` to `log=1` in `config.txt` and reboot.
+2. Play normally.
+3. In VitaShell, press Select to start its FTP server.
+4. On a computer with a copy of the fpsvita source, run:
+
+   ```
+   python3 -I tools/ingest_playlog.py --ip VITA_IP
+   ```
+
+   `VITA_IP` is the address VitaShell shows. The script appends one row per rate line to
+   `play.tsv` and deletes the log on the Vita (`--keep` leaves it; `--out` picks another
+   file).
+5. Attach the TSV file to your issue.
+6. Set `log=0` and reboot when you are done. Each rate line is a few-millisecond write to the
+   memory card from the game's display thread.
+
+`helper.log` also gets a few lines at every game launch and grows until something deletes it.
+Delete it whenever you like.

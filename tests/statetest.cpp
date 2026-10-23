@@ -47,7 +47,7 @@ static int sce_paf_snprintf(char *b, size_t n, const char *f, ...) {
 
 static int32_t g_globalInterval = -1;
 static int32_t g_hudMode = 0, g_hudPos = 0;
-static int32_t g_lowLatency = 0, g_jit = 0, g_softcap = 0, g_tear = 0, g_advShown = 0;
+static int32_t g_lowLatency = 0, g_jit = 0, g_softcap = 0, g_tear = 0, g_advShown = 0, g_rateLog = 0;
 #define FPSVITA_ADV_LOWLAT (1 << 0)
 #define FPSVITA_ADV_JIT    (1 << 1)
 #define FPSVITA_ADV_TEAR   (1 << 2)
@@ -67,7 +67,7 @@ struct Impose {
 
 /* companion side */
 namespace comp {
-typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int pg_read; int32_t pg_panel; } HelperConfig;
+typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int pg_read; int32_t pg_panel; int log; } HelperConfig;
 #include "comp_io.inc"
 }
 
@@ -199,6 +199,13 @@ int main(){
     int32_t iv=-9, inj=-9, ad=-9, hud=-9, pos=-9;
     expect("shell readGlobals succeeds", readGlobals(&iv,&inj,&ad,&hud,&pos));
     expect("shell reads antilag=auto as 2", g_jit==2 && iv==2 && ad==1);
+    expect("no log= -> 0", RGC("PCSE00411")==1 && c.log==0 && g_rateLog==0);
+    putcfg("limit=2\nlog=1\n");
+    expect("shell reads log=1", readGlobals(&iv,&inj,&ad,&hud,&pos) && g_rateLog==1);
+    { Impose o=mk("",2,0,1); o.PersistState(); }
+    expect("config rewrite keeps log=1", strstr(getcfg(),"log=1\n")!=NULL);
+    expect("helper reads log=1", RGC("PCSE00411")==1 && c.log==1);
+    g_rateLog = 0;
 
     printf("== 6. No config.txt: defaults, and nothing is read from state.txt ==\n");
     if(system("rm -f statedir/config.txt")){}

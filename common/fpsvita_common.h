@@ -108,7 +108,7 @@ extern "C" {
  * sites working. */
 /*
  * Overlay (HUD) drawn by the shell over the running game. The shell owns the
- * mode and position (state.txt keys `hud=` and `hudpos=`), the helper only
+ * mode and position (config.txt keys `hud=` and `hudpos=`), the helper only
  * reads the mode to know whether to push FpsvitaStats.
  */
 #define FPSVITA_HUD_OFF   (0)

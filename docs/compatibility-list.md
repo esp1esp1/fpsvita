@@ -1,30 +1,47 @@
 # Compatibility list
 
-What fpsvita does for which games, from what has been played and measured on one Vita plus
-reports collected from patch lists and reviews. Three sections:
+For players choosing settings for a game, and for testers adding results. It lists what is
+known per title: measured latency gains, frame limits that work, and limits that break a
+game. A title that is not listed is simply untested.
 
-- **Latency options** can be used on every game. Antilag and Lowlat change nothing about the frame
-  rate or the game's speed, so they are the safe thing to try on any title, and the table shows
-  the measured input-to-screen gain where one was taken.
-- **Limits** are listed only for games known to run correctly at that limit. fpsvita changes
-  how many vblanks a game waits per frame, or adds a wait when the game has none. A game that
-  advances its world a fixed step per frame runs too fast above its own rate and in slow motion
-  below it, and nothing done from outside the game changes that. An entry vouches for its limit
-  only: Jak and Daxter is fine held at 30 and still runs double speed uncapped. If a game is
-  not here, or you want a different limit, Default is the safe setting.
-- **Probably incompatible** is the known-bad list for limits, so you do not have to find out
-  yourself.
+## How to read this list
 
-See the [guide](GUIDE.md) for the rest.
+The list has three parts:
 
-## Latency options
+1. [Latency results](#latency-results): Antilag and Lowlat measured on a title. These
+   options keep the game at its own rate, so they apply whatever limit you use.
+2. [Limits known to work](#limits-known-to-work): a limit that plays at the right speed.
+   **Each entry vouches for its limit only.** Jak and Daxter is fine held at 30 and still
+   runs at double speed uncapped.
+3. [Probably incompatible](#probably-incompatible): limits that break a game, mostly
+   because its speed follows the frame rate (see
+   [why some games break](GUIDE.md#why-some-games-break-at-another-frame-rate)). The quick
+   menu marks these with `(!)` and the overlay's TIP row names the problem.
 
-Antilag and Lowlat do not change the frame rate (unchanged in every pair measured) or the
-game's speed, so they apply to any title in this file, including every one in the
-incompatible list. Input is the overlay's INPUT row: the age of the frame's newest controller
-sample when that frame is flipped to the screen, measured on the same content with the option
-off and on. The overlay's LAST row shows the same before-and-after on whatever you are playing.
-How these were measured: [latency-measurements.md](latency-measurements.md).
+`Default` leaves the game's own pacing alone and is safe for every title.
+
+Each entry in the incompatible table carries a confidence level:
+
+| Confidence | Meaning |
+|---|---|
+| played | Checked on the author's Vita with fpsvita |
+| dev | Reported by a developer or patch author |
+| user | A direct report from a player |
+| list | A line in a compiled list |
+
+## Adding a game
+
+Report it through an issue, as described in
+[Reporting a game](GUIDE.md#reporting-a-game). A report enters the list with `user`
+confidence.
+
+Say whether the game's speed looked right by eye. An FPS reading alone cannot show a
+speed-tied game: it reaches 60 fps and runs at double speed.
+
+## Latency results
+
+Input to screen as the overlay's INPUT row reports it, option off then on. Method and the
+full results are in [latency measurements](latency-measurements.md).
 
 | Title | Title ID | Type | Rate | Antilag | Lowlat |
 |---|---|---|---|---|---|
@@ -36,12 +53,11 @@ How these were measured: [latency-measurements.md](latency-measurements.md).
 | Galaxy on Fire 2 | GALAXYOF2 | Homebrew | Own | 21 to 16 ms | |
 | Doom64EX | DOOM64EX1 | Homebrew | Own 60 | 34 to 27 ms | Cannot apply (graphics set up outside the hooked call) |
 
-An empty Lowlat cell means not measured. Lowlat only helps a game whose QUEUE row sits near a
-whole frame, and takes effect at the game's next launch.
+An empty Lowlat cell means not measured, not no effect.
 
-## Limits
+## Limits known to work
 
-### Played
+### Played with fpsvita
 
 | Title | Title IDs | Type | Limit |
 |---|---|---|---|
@@ -73,16 +89,16 @@ whole frame, and takes effect at the game's next launch.
 
 ### From patch lists
 
-VitaGrafix's FPS option is a vblank count of 1, 2 or 3 written into the game (60, 30 or 20
-fps), or for three titles a two-vblank wait added after each flip. That is exactly what
-fpsvita's 60fps, 30fps and 20fps limits and its Vsync option do, from outside the game, so a
-title whose patch has no known issues takes an fpsvita limit the same way. The limit column is
-what the patch is used for: 60 on games that run their own 30, and 30 on the three uncapped
-games that get the added wait. Several of these have been played with the patch at that limit
-by the fpsvita author; none has been re-measured with fpsvita yet. Patches that do something
-else inside the game (Asphalt: Injection's millisecond timer, IA/VT Colorful's target-fps
-constant, the pending Project Diva 60 fps patches that rescale the games' timesteps) are not
-listed, because fpsvita cannot do what they do.
+These titles have a frame-rate patch in VitaGrafixPatchlist, so the limit is known to play
+at the right speed. None has been measured with fpsvita yet. The author played several of
+them with the patch at that limit.
+
+The Patch column says what the patch does:
+
+- `vblank`: writes a vblank count into the game. An fpsvita limit sets the same count from
+  outside.
+- `wait`: adds a two-vblank wait after each flip. That is what fpsvita's limits and
+  [Vsync](GUIDE.md#vsync) do from outside.
 
 | Title | Title IDs | Own rate | Limit | Patch |
 |---|---|---|---|---|
@@ -108,27 +124,14 @@ listed, because fpsvita cannot do what they do.
 | Ys Origin | PCSB01081, PCSE01033, PCSH10049 | 30 | 60 | vblank |
 | Ys VIII: Lacrimosa of Dana | PCSB01128, PCSE01103, PCSG00881, PCSH00297 | 30 | 60 | vblank |
 
-Titles with a patch of this kind that are nevertheless in the list below, because the patch
-itself has known speed or input problems: Jak and Daxter (fine held at 30, its patch's purpose;
-double speed at 60), Killzone: Mercenary (no input above 59 fps unless the title's `state.txt`
-line has `read=peek`), Project Diva f and f 2nd (menus double speed at 60, held notes fail),
-WipEout 2048 (ship shakes with a cap).
+Left out: patches that change something inside the game that fpsvita cannot reach, such as
+Asphalt: Injection's millisecond timer, IA/VT Colorful's target-fps constant and the pending
+Project Diva 60 fps timestep patches.
 
-Sources: [VitaGrafixPatchlist](https://github.com/Electry/VitaGrafixPatchlist) `patchlist.txt`
-and README as of September 2026, plus its open pull requests. The pending README rewrite
-([#158](https://github.com/Electry/VitaGrafixPatchlist/pull/158)) adds per-game markers for an
-internal FPS lock and for gameplay speed tied to the frame rate; once those are filled in they
-are the better source for this section.
+Some titles with a patch are still in the incompatible table below: Jak and Daxter,
+Killzone: Mercenary (it needs `read=peek`), Project Diva f / f 2nd and WipEout 2048.
 
 ## Probably incompatible
-
-Reported to run at the wrong speed, or to break otherwise, when the frame rate changes. Most
-reports come from community frame-rate patches or a v-sync switch (the same as Uncapped); a
-game that runs too fast above its own rate is very likely slow motion below it. Keep these on
-Default; Antilag can still be used on all of them. Confidence: **played** checked on this Vita with
-fpsvita, **dev** a developer or patch author, **user** a direct report, **list** a line in a
-compiled list. Reports of games that misbehave, or that run correctly at a limit, are welcome
-as issues: title id, name, the limit, and what happened.
 
 | Title | IDs | What breaks | Source | Confidence |
 |---|---|---|---|---|
@@ -184,9 +187,29 @@ as issues: title id, name, the limit, and what happened.
 | WipEout 2048 | PCSA00015, PCSF00007, PCSC00006, PCSD00005 | Ship shakes with a cap set | [VGPL#72](https://github.com/Electry/VitaGrafixPatchlist/issues/72) | user |
 | Ys: Memories of Celceta | PCSE00245, PCSB00497, PCSG00105, PCSH00181 | Faster uncapped (48 fps here, speed not yet judged) | [VGPL#37][37] | list |
 
-Reviewers also saw these slow down, rather than drop frames, when they miss their own rate, so
-a lower limit will probably play as slow motion: Catherine: Full Body (PCSG01179), Dead or Alive
-5 Plus below its 60 (PCSE00235, PCSB00296, PCSG00167), Kamen Rider Battride War Sousei, World of
-Final Fantasy. Source: [Vita Game Performance](https://vitagameperformance.wordpress.com/).
+"Here" means measured on the author's Vita.
+
+## Possibly slow below their own rate
+
+Reviewers saw these titles slow down, rather than drop frames, when they missed their own
+rate. A lower limit probably plays as slow motion:
+
+- Catherine: Full Body (PCSG01179)
+- Dead or Alive 5 Plus below 60 (PCSE00235, PCSB00296, PCSG00167)
+- Kamen Rider Battride War Sousei
+- World of Final Fantasy
+
+Source: [Vita Game Performance](https://vitagameperformance.wordpress.com/).
+
+## Sources
+
+- Measurements and played entries: one retail OLED Vita (PCH-1000), enso, firmware 3.65,
+  October 2026.
+- [VitaGrafixPatchlist](https://github.com/Electry/VitaGrafixPatchlist): `patchlist.txt` and
+  README as of September 2026, plus open pull requests. Its pull request #158 will add
+  per-game markers for an internal FPS lock and for speed tied to frame rate.
+- [VitaGrafixPatchlist issue #37][37] and the other VitaGrafixPatchlist (VGPL) and
+  [VitaGrafix](https://github.com/Electry/VitaGrafix) (VG) issues linked in each row.
+- [Vita Game Performance](https://vitagameperformance.wordpress.com/) reviews.
 
 [37]: https://github.com/Electry/VitaGrafixPatchlist/issues/37

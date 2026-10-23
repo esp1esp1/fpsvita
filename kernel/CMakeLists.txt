@@ -20,6 +20,7 @@ target_link_libraries(fpsvita-kernel
   SceProcessmgrForDriver_stub
   SceProcEventForDriver_stub
   SceDisplayForDriver_stub
+  SceKernelSuspendForDriver_stub
   k
   gcc
 )

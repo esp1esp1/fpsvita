@@ -97,10 +97,12 @@ static tai_hook_ref_t  s_hookRef[HOOK_COUNT];
 
 static volatile uint32_t g_frame_count       = 0;
 static volatile uint32_t g_last_vblank_frame = 0;
+static uint32_t g_rate_t0 = 0; /* rate report window start */
+static int s_rateLog = 0;      /* config.txt `log=1` */
 
 /* Debug log: a few lines per process the helper starts in, all at startup
- * (module_start, late modules, GXM init); dev builds add the probe and rate
- * lines from game threads. Lines from two threads interleaved once, so one
+ * (module_start, late modules, GXM init); `log=1` adds the rate lines and
+ * dev builds the probe lines from game threads. Lines from two threads interleaved once, so one
  * writer at a time: the rest wait up to 20 ms and then drop their line
  * rather than stall a game thread on flash. */
 static volatile int s_logLock;
@@ -153,6 +155,7 @@ typedef struct HelperConfig {
 	int32_t pg_ll, pg_jit, pg_sc, pg_tear;
 	int     pg_read;      /* per-game "read=peek": blocking Read becomes Peek */
 	int32_t pg_panel;     /* per-game "panel=<hz>" (experimental), 0 none */
+	int     log;          /* "log=1": rate lines in helper.log */
 } HelperConfig;
 
 /* Opt-in latency tweak, read from state.txt at launch (see readGameConfig) */
@@ -342,7 +345,7 @@ static int uncappedReturn(int isCallbackVariant)
  * Multi import. That deliberately bypasses the rest of the taiHEN chain for
  * that call — other plugins hooking Multi (PSVshellPlus and similar) will not
  * observe it. Left as-is because changing chain semantics needs on-device
- * verification against those plugins; see REVIEW.md.
+ * verification against those plugins.
  * ------------------------------------------------------------------ */
 
 static int sceDisplayWaitVblankStartMulti_patched(unsigned int interval)
@@ -1004,6 +1007,41 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 	if (st.hud_mode != FPSVITA_HUD_OFF && now - s_stats_last_push >= FPSVITA_STATS_PUSH_US)
 		pushStats(now, &st);
 
+	/* Rate reports (config.txt `log=1`, off by default: this is a flash
+	 * write from the thread that flips, a few ms every 50 to 100 s, which a
+	 * user should not pay for unasked): one line per 3000 presents, each
+	 * measuring the preceding 600. The first lands at frame 900 so a sweep
+	 * sees it inside its wait. tools/ingest_playlog.py collects them. */
+	if (s_rateLog) {
+		uint32_t ph = frames % 3000u;
+		if (ph == 300 || ph == 2400) {
+			g_rate_t0 = sceKernelGetProcessTimeLow();
+		} else if (ph == 900 || ph == 0) {
+			uint32_t dt = sceKernelGetProcessTimeLow() - g_rate_t0;
+			/* sceClibSnprintf does not terminate on truncation (garbage after
+			 * over-long lines, 2026-10-17): size the buffer for the full line
+			 * and force the terminator and newline anyway. */
+			char line[640];
+			int len = sceClibSnprintf(line, sizeof(line) - 2,
+				"helper: rate frames=%u flips/s=%u cur=%d inject=%d since_vblank=%u ae_period=%u work=%u work_max=%u ctrl_after_pct=%u jit=%d slack=%u applied=%u missed=%u present_lag=%u softcap=%d softcap_applied=%u ll=%d"
+				" ts=%d/%d/%d ts_n=%u rd_ph=%d ts_ph=%d fresh=%u/%u/%u out=%d scan=%d fscan=%d flag=%u tied=%u unmatched=%u hurt=%u miss=%u near=%u imm=%u/%u/0x%08x",
+				frames, dt ? (unsigned)((600ull * 1000000ull) / dt) : 0, (int)cur,
+				g_inject_active, frames - g_last_vblank_frame, s_ae_period_ema, s_work_ema,
+				s_work_prev_max > s_work_win_max ? s_work_prev_max : s_work_win_max,
+				s_ctrl_after_pct, s_jitEnabled ? 1 : s_autoEnabled ? 2 : 0,
+				s_jit_slack, s_jit_applied, s_jit_missed, s_present_lag_ema, (int)s_softcap, s_softcap_applied,
+				s_lowLatencyApplied || s_lowLatencyNative,
+				s_ts_min, s_ts_ema, s_ts_max, s_ts_n, s_rd_ph_ema, s_ts_ph_ema,
+				s_fresh_hit, s_fresh_miss, s_fresh_spin_ema, s_ts_out_ema, s_scan_ema,
+				s_fscan_ema, s_flag_ema, s_entry_tied, s_entry_unmatched, s_jit_hurt,
+				s_miss_dbl, s_miss_near, s_imm_calls, s_imm_err, s_imm_code);
+			if (len < 0 || len > (int)sizeof(line) - 3) len = (int)sizeof(line) - 3;
+			if (len == 0 || line[len - 1] != '\n') { line[len++] = '\n'; }
+			line[len] = '\0';
+			helperLog(line);
+			s_ts_n = 0;   /* min/max restart with the next sample */
+		}
+	}
 
 	if (cur <= 0) /* Off or Uncapped: no inject ever */
 		return ret;
@@ -1104,7 +1142,8 @@ static int lineIsGlobalKey(const char *p, int linelen)
 	    || (linelen > 8  && sceClibStrncmp(p, "tearing=", 8) == 0)
 	    || (linelen > 8  && sceClibStrncmp(p, "limiter=", 8) == 0)
 	    || (linelen > 4  && sceClibStrncmp(p, "hud=",     4) == 0)
-	    || (linelen > 7  && sceClibStrncmp(p, "hudpos=",  7) == 0);
+	    || (linelen > 7  && sceClibStrncmp(p, "hudpos=",  7) == 0)
+	    || (linelen > 4  && sceClibStrncmp(p, "log=",     4) == 0);
 }
 
 
@@ -1156,6 +1195,8 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 					           : ((int)sceClibStrtoll(p + 8, NULL, 10) ? 1 : 0);
 				else if (linelen > 8 && sceClibStrncmp(p, "tearing=", 8) == 0)
 					cfg->tear = (int)sceClibStrtoll(p + 8, NULL, 10) ? 1 : 0;
+				else if (linelen > 4 && sceClibStrncmp(p, "log=", 4) == 0)
+					cfg->log = (int)sceClibStrtoll(p + 4, NULL, 10) ? 1 : 0;
 			}
 		} else if (linelen > tidlen + 1 && p[tidlen] == '=') {
 			int match = 1;
@@ -1214,6 +1255,7 @@ static __attribute__((noinline)) void readGameConfig(const char *titleid,
 	cfg->pg_ll = cfg->pg_jit = cfg->pg_sc = cfg->pg_tear = -1;
 	cfg->pg_read = 0;
 	cfg->pg_panel = 0;
+	cfg->log = 0;
 
 	/* One buffer size shared with the shell (FPSVITA_STATE_BUF), so the
 	 * writer can never produce a file this reader cannot fully see. Static
@@ -1569,6 +1611,7 @@ int module_start(SceSize argc, const void *args)
 	readGameConfig(s_titleid, &s_cfg);
 	s_pergame = s_cfg.pergame;
 	s_readPeek = s_cfg.pg_read;
+	s_rateLog = s_cfg.log;
 #ifdef FPSVITA_LITE
 	/* No shell to seed the globals: this process is its own kernel. */
 	fpsvitaSetInterval(s_cfg.interval);

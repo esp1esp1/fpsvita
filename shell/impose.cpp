@@ -1,12 +1,13 @@
 /*
  * FPSVita Shell UI — Impose (Quick Menu) Integration
  *
- * Creates a single-row framecap control in the PS Vita quick menu:
- *   FPS: [<] 30fps (n:60) [>]  [Save]
+ * Creates three rows in the PS Vita quick menu (layout in res/fpsvita_plugin.xml):
+ *   FPS: [<] 30fps (og:60) [>]      Limiter: [<] off [>]
+ *   HUD: [<] Full [>]                Corner: [<] BL [>]
+ *   Latency: [x] Lowlat [x] Antilag   Vsync [x]   [Save]
  *
- * When autodetect is off, inject checkbox appears alongside save.
- * Save button writes the current interval as a per-game override.
- * Native interval (n:XX) shows the game's original vsync setting.
+ * The Vsync checkbox shows only when autodetect is off. Save writes the
+ * current settings as a per-game override. og:XX is the game's own rate.
  *
  * Widgets are created on every quick menu open and destroyed on close,
  * matching PSVshellPlus's lifecycle pattern exactly.
@@ -91,7 +92,7 @@ int32_t Impose::FindCycleIndex(int32_t interval)
  * config.txt holds the globals and is regenerated whole by the shell:
  *   limit=<n>       -1 Default, 1 60fps, 2 30fps, 3 20fps, 0 Uncapped
  *   vsync=auto|0|1  forced vsync wait (auto = detected)
- *   hud=, hudpos=, lowlat=, antilag=, limiter=<fps>, tearing=
+ *   hud=, hudpos=, lowlat=, antilag=, limiter=<fps>, tearing=, log=
  * state.txt holds one "TITLEID=<limit>,lowlat=,antilag=,limiter=,tearing="
  * line per title. SavePerGame replaces or appends this title's line and
  * keeps every other line verbatim, so a line this version does not know
@@ -151,9 +152,9 @@ static void writeConfigFile(int32_t interval, int32_t inject, int32_t autodetect
 		sce_paf_snprintf(antilag, sizeof(antilag), "%d", (int)g_jit);
 	int len = sce_paf_snprintf(buf, sizeof(buf),
 	                            "limit=%d\nvsync=%s\nhud=%d\nhudpos=%d\n"
-	                            "lowlat=%d\nantilag=%s\nlimiter=%d\ntearing=%d\n",
+	                            "lowlat=%d\nantilag=%s\nlimiter=%d\ntearing=%d\nlog=%d\n",
 	                            interval, vsync, g_hudMode, g_hudPos,
-	                            g_lowLatency, antilag, g_softcap, g_tear);
+	                            g_lowLatency, antilag, g_softcap, g_tear, g_rateLog);
 	if (len > 0 && len < (int)sizeof(buf))
 		writeWhole(FPSVITA_CONFIG_FILE, buf, len);
 }
@@ -364,6 +365,8 @@ bool readGlobals(int32_t *interval, int32_t *inject, int32_t *autodetect,
 				g_softcap = (int32_t)sce_paf_strtol(val, NULL, 10);
 			else if (klen == 7 && sce_paf_strncmp(p, "tearing", 7) == 0)
 				g_tear = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
+			else if (klen == 3 && sce_paf_strncmp(p, "log", 3) == 0)
+				g_rateLog = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 		}
 		if (*eol != '\n') break;
 		p = eol + 1;
@@ -413,7 +416,8 @@ void Impose::UpdateWarning()
 	if (!warnText)
 		return;
 	bool show = hasGame
-	         && fpsvitaCompatWarn(fpsvitaCompatFlags(titleid), currentInterval, readPeek) != NULL;
+	         && fpsvitaCompatWarn(fpsvitaCompatFlags(titleid), currentInterval, nativeInterval,
+	                             readPeek) != NULL;
 	if (show)
 		widgetShow(warnText);
 	else
@@ -615,6 +619,7 @@ void Impose::InjectCBFun(int32_t type, ui::Handler *self,
 	obj->currentInject = (obj->currentInject == FPSVITA_INJECT_ON) ? FPSVITA_INJECT_OFF
 	                                                               : FPSVITA_INJECT_ON;
 	fpsvitaSetInject(obj->currentInject);
+	obj->PersistState();   /* Vsync is a global: config.txt, also with a game running */
 }
 
 void Impose::SaveCBFun(int32_t type, ui::Handler *self,

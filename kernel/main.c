@@ -12,6 +12,7 @@
 #include <psp2kern/kernel/proc_event.h>
 #include <psp2kern/display.h>
 #include <psp2kern/kernel/threadmgr.h>
+#include <psp2kern/kernel/suspend.h>
 #include <taihen.h>
 #include <string.h>
 
@@ -41,7 +42,9 @@ static volatile int32_t g_softcap        = 0;
 static FpsvitaStats     g_stats;          /* zeroed when a new title id lands */
 static SceUID           g_owner_pid = -1; /* process that wrote the title id */
 static SceUID           g_proc_event = -1;
+static SceUID           g_sys_event = -1;
 static volatile int32_t g_panel_hz = 0;   /* applied panel refresh, 0 = stock */
+static int32_t g_panel_resume = 0;        /* rate to re-apply after a resume, 0 none */
 
 static void panelSet(int32_t hz);   /* below, with the panel timing patch */
 
@@ -137,6 +140,7 @@ void fpsvitaSetTitleIdPart(int32_t part, uint32_t value)
 		FpsvitaStats z = {0};
 		g_stats = z;
 		g_owner_pid = value ? ksceKernelGetProcessId() : -1;
+		g_panel_resume = 0;
 		panelSet(0);   /* a panel rate belongs to the title that asked for it */
 	}
 	SYSCALL_EXIT
@@ -210,7 +214,32 @@ static void ownerGone(SceUID pid)
 	g_native_interval = 0;
 	g_stats = z;
 	g_owner_pid = -1;
+	g_panel_resume = 0;
 	panelSet(0);
+}
+
+/* Sleep with a stretched panel: resume rebuilds part of the display setup
+ * from the timing entry, and after the title exited at stock timing again
+ * the shell's top layers flickered half-drawn until a reboot (OLED,
+ * 2026-10-23). So the stock timing goes back before suspend, and the rate
+ * is re-applied once resume is done (late resume, 0x100000), which is the
+ * live change that has always been clean. */
+int ksceKernelUnregisterSysEventHandler(SceUID id);
+
+static int sysEvent(int resume, int eventid, void *args, void *opt)
+{
+	if (!resume) {
+		if (g_panel_hz > 0 && !g_panel_resume) {   /* first suspend phase only */
+			g_panel_resume = g_panel_hz;
+			panelSet(0);
+		}
+	} else if (eventid == 0x100000 && g_panel_resume) {
+		int32_t hz = g_panel_resume;
+		g_panel_resume = 0;
+		if (g_owner_pid >= 0)
+			panelSet(hz);
+	}
+	return 0;
 }
 
 /*
@@ -221,8 +250,9 @@ static void ownerGone(SceUID pid)
  * and VFP, so a taller vtotal with the extra lines in the front porch lowers
  * the refresh live: 1050 x 890 is 40.0 Hz (measured 2026-10-18 on a PCH-1000,
  * fw 3.65, no artefacts at 24 to 50 Hz). Nothing is written unless the panel
- * is in mode 0 and exactly one entry matches every known word, so an LCD
- * model, a PSTV or another firmware's table is left alone. Released (the
+ * is in mode 0 and exactly one entry matches every known word, so another
+ * firmware's table is left alone. The Slim's LCD is brought up from the same
+ * mode 0 entry (xerpi's display.c), so it matches there too; untested. Released (the
  * original words come back) when the title exits or another one starts.
  */
 #define PANEL_PCLK_HZ   37384615u   /* 1050 x 594 x 59.94 */
@@ -350,6 +380,7 @@ int __module_start(SceSize args, const void *argp)
 	h.switch_process = NULL;
 	g_proc_event = ksceKernelRegisterProcEventHandler("fpsvita", &h, 0);
 	g_panel_lock = ksceKernelCreateMutex("fpsvita_panel", 0, 0, NULL);
+	g_sys_event = ksceKernelRegisterSysEventHandler("fpsvita_sysevent", sysEvent, NULL);
 	return SCE_KERNEL_START_SUCCESS;
 }
 
@@ -357,6 +388,8 @@ int __module_stop(SceSize args, const void *argp)
 {
 	if (g_proc_event >= 0)
 		ksceKernelUnregisterProcEventHandler(g_proc_event);
+	if (g_sys_event >= 0)
+		ksceKernelUnregisterSysEventHandler(g_sys_event);
 	panelSet(0);
 	if (g_panel_lock >= 0)
 		ksceKernelDeleteMutex(g_panel_lock);

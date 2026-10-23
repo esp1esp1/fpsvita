@@ -124,14 +124,15 @@
 
     <!--
       Quick menu rows (shell/impose.cpp):
-        [icon] FPS:  [<] 30fps (og:60) [>]              Vsync [x]  [Save]
+        [icon] FPS:  [<] 30fps (og:60) [>]           Limiter: [<] off [>]
                HUD:  [<] Full [>]                     Corner: [<] BL [>]
-           Latency:  [x] Lowlat  [x] Antilag        Limiter: [<] off [>]
+           Latency:  [x] Lowlat  [x] Antilag        Vsync [x]    [Save]
 
       Column grid as PSVshellPlus's rows: label at x=44, down button at
       130, value at 198. Right-hand controls are anchored to the right
-      edge (anchor 2), where the system puts its own; the HUD corner and
-      the Limiter share one column so they line up.
+      edge (anchor 2), where the system puts its own; the Limiter's
+      buttons share the HUD corner's column. Save sits bottom right, the
+      usual place for a confirm button.
     -->
     <template id="fc_template_impose">
       <group id="fc_group_impose_mode">
@@ -162,34 +163,30 @@
         <!-- Known-bad limit warning; shown only when a game is running and
              the selected limit is in the compatibility list's bad table -->
         <text style="fc_style_text_warn" id="fc_text_warn">
-          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="408, 0" />
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="394, 0" />
         </text>
 
-        <!-- Right arrow button; room for "Uncapped (og:60)" before it -->
+        <!-- Right arrow button; room for "Uncapped (og:60)" before it and
+             the Limiter label after it -->
         <button style="_common_default_style_button" id="fc_button_mode_up"
                 label="fc_msg_right">
-          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="440, 0" />
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="426, 0" />
         </button>
 
-        <!-- Right-anchored widgets: a positive pos moves RIGHT (off screen);
-             the Save button at 7 is the system's own position for a
-             right-hand control, everything else steps left from it. -->
-
-        <!-- "Vsync" label near the checkbox (hidden when autodetect on) -->
-        <text style="fc_style_text_impose" id="fc_text_inject_label"
-              label="fc_msg_inject">
-          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-129, 0" />
+        <!-- Limiter, right-anchored: the buttons in the HUD corner's column,
+             the label 5 px closer to them to clear the FPS arrow. A
+             positive pos moves RIGHT (off screen). -->
+        <text style="fc_style_text_impose" id="fc_text_softcap_label" label="fc_msg_softcap">
+          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-160, 0" />
         </text>
-
-        <!-- Inject toggle checkbox (hidden when autodetect on) -->
-        <check_box id="fc_check_inject">
-          <layout_hint align="2, 0" size="46, 46" anchor="2, 4" pos="-73, 0" />
-        </check_box>
-
-        <!-- Save per-game button (hidden when no game running) -->
-        <button style="_common_default_style_button" id="fc_button_save"
-                label="fc_msg_save">
-          <layout_hint align="2, 0" size="70, 46" anchor="2, 4" pos="7, 0" />
+        <button style="_common_default_style_button" id="fc_button_softcap_down" label="fc_msg_left">
+          <layout_hint align="2, 0" size="48, 48" anchor="2, 4" pos="-107, 0" />
+        </button>
+        <text style="fc_style_text_impose" id="fc_text_softcap_value">
+          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-55, 0" />
+        </text>
+        <button style="_common_default_style_button" id="fc_button_softcap_up" label="fc_msg_right">
+          <layout_hint align="2, 0" size="48, 48" anchor="2, 4" pos="7, 0" />
         </button>
 
       </group>
@@ -251,18 +248,24 @@
         <text style="fc_style_text_impose" id="fc_text_jit_label" label="fc_msg_jit">
           <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="358, 0" />
         </text>
-        <!-- Limiter, right-anchored in the same column as the HUD corner -->
-        <text style="fc_style_text_impose" id="fc_text_softcap_label" label="fc_msg_softcap">
-          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-165, 0" />
+        <!-- Right-anchored: Save at 7 is the system's own position for a
+             right-hand control, the rest steps left from it. -->
+
+        <!-- "Vsync" label near the checkbox (hidden when autodetect on) -->
+        <text style="fc_style_text_impose" id="fc_text_inject_label"
+              label="fc_msg_inject">
+          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-129, 0" />
         </text>
-        <button style="_common_default_style_button" id="fc_button_softcap_down" label="fc_msg_left">
-          <layout_hint align="2, 0" size="48, 48" anchor="2, 4" pos="-107, 0" />
-        </button>
-        <text style="fc_style_text_impose" id="fc_text_softcap_value">
-          <layout_hint align="2, 0" adjust="2, 2" anchor="2, 4" pos="-55, 0" />
-        </text>
-        <button style="_common_default_style_button" id="fc_button_softcap_up" label="fc_msg_right">
-          <layout_hint align="2, 0" size="48, 48" anchor="2, 4" pos="7, 0" />
+
+        <!-- Inject toggle checkbox (hidden when autodetect on) -->
+        <check_box id="fc_check_inject">
+          <layout_hint align="2, 0" size="46, 46" anchor="2, 4" pos="-73, 0" />
+        </check_box>
+
+        <!-- Save per-game button (hidden when no game running) -->
+        <button style="_common_default_style_button" id="fc_button_save"
+                label="fc_msg_save">
+          <layout_hint align="2, 0" size="70, 46" anchor="2, 4" pos="7, 0" />
         </button>
       </group>
     </template>

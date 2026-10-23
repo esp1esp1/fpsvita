@@ -493,7 +493,7 @@ void Hud::Refresh(const FpsvitaState &st)
 	bool sleepFits = haveWork && (st.interval == FPSVITA_INTERVAL_30FPS || st.interval == FPSVITA_INTERVAL_20FPS)
 	              && s.work_us + 5000u + vblank <= vblank * (uint32_t)st.interval;
 	const wchar_t *compat = fpsvitaCompatWarn(fpsvitaCompatFlags((const char *)st.titleid),
-	                                          st.interval, s_readPeek);
+	                                          st.interval, st.native_interval, s_readPeek);
 	if (compat)
 		s_tipCompat = compat;
 	int cand;

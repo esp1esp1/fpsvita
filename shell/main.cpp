@@ -103,6 +103,7 @@ int32_t g_lowLatency = 0;
 int32_t g_jit = 2;   /* fresh install: auto Antilag (fresh poll only) */
 int32_t g_softcap = 0;
 int32_t g_tear = 0;
+int32_t g_rateLog = 0;
 static Framework *s_fwkInstance = NULL; /* cached during stage 1 */
 
 static bool s_imposeOpened = false;

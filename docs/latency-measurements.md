@@ -1,83 +1,100 @@
 # Latency measurements
 
-The numbers behind fpsvita's latency options, measured on one retail PS Vita (ensō, firmware
-3.65) in October 2026. This is the long answer to "does Antilag actually do anything" and
-"why is Tearing a kernel feature".
+For readers who want the evidence behind fpsvita's latency options and the reasons they work
+the way they do. It covers how input latency was measured, how the Vita samples the
+controller, the results per option, the results that came out negative, and ideas that were
+examined and not built. For what each option does in practice, see the
+[user guide](GUIDE.md#options).
 
-## 1. What was measured
+## Method
 
-The helper (the plugin that runs inside each game) records, for every frame:
+All numbers come from one retail Vita (enso, firmware 3.65) in October 2026.
 
-- **Input age at the read.** When the game asks for the controller state, how old is the newest
-  sample it gets? The Vita stamps each sample with the time it was taken.
-- **Input to screen.** The age of the newest controller sample the game had when it submitted
-  a frame, measured at the moment that frame is flipped to the display. This is the whole
-  chain except the panel's own response, and it is the INPUT row on the overlay.
-- **Submit to flip.** How long a finished frame waits in the display queue before it is shown
-  (the QUEUE row).
-- Frame rate, CPU time per frame, and which display and controller calls the game makes.
+Each option was tested by playing the same part of a game twice, option off and then on, and
+comparing the first full measurement window of each run. Frame rates were unchanged in every
+pair.
 
-Every option was tested by playing the same part of a game twice, with the option off and then
-on, and comparing the first full measurement window. Titles: Metal Gear Solid 2 HD, The Wolf
-Among Us, Oddworld: Stranger's Wrath HD, The Swapper, Dead or Alive 5 Plus, Grim Fandango
-Remastered, Doom64EX, Galaxy on Fire 2 and The Simpsons: Hit & Run (a homebrew port).
+**Input to screen** is the age of the newest controller sample the game had when it submitted
+a frame, measured when that frame flips. It is the overlay's INPUT row. It does not include
+the panel's own response time.
 
-## 2. How the Vita samples the controller
+## How the Vita samples the controller
 
-- The system reads the controller once per screen refresh (every 16.7 ms). The new sample
-  becomes visible to games 0.5 to 1.5 ms after the refresh begins.
-- Most games read the controller right after they submit a frame, which happens right after
-  a refresh begins. That is a hair *before* the new sample lands, so the game gets the previous
-  one and plays on input that is a full refresh old. Measured on The Wolf Among Us: the read
-  happens 0.2 ms after the refresh and the sample it gets is 16.2 ms old, every frame.
-- With a two-deep display queue (the Vita default), a finished frame can wait a further 16 to
-  33 ms before it is shown.
+The controller is sampled once per refresh, every 16.7 ms. A new sample becomes visible 0.5
+to 1.5 ms after the refresh begins.
 
-Put together, a typical game at a 30 fps limit shows input that is 25 to 55 ms old before the
-panel even starts drawing it.
+Most games read the controller right after they submit a frame, which is right after a
+refresh begins. They read just before the new sample lands, so they get the previous one.
+The Wolf Among Us reads 0.2 ms after the refresh and gets a sample 16.2 ms old, every frame.
 
-## 3. Antilag
+## Where a frame's latency comes from
 
-Antilag does two things.
+Follow one frame of a typical game at a 30 limit:
 
-**Fresh poll.** When the game's controller read returns a sample that is nearly a refresh old,
-the helper re-reads until the new one is in, 2.5 ms at most. In practice the wait is 0.2 to
-0.5 ms and it never timed out. Where a game reads twice per frame (Galaxy on Fire 2) it pays
-about 3 ms of CPU per frame; the game lost no frames because it was waiting for the screen
-anyway.
+| Step | Adds |
+|---|---|
+| The sample is already old when read | up to one refresh, 16.7 ms |
+| Simulate and render | the game's CPU time |
+| Wait in the display queue (two frames deep by default) | 16 to 33 ms |
+| Flip at the next vblank | until that vblank |
 
-**Whole-refresh sleep.** At a 30 or 20 fps limit a frame often sits in the display queue for a
-whole refresh before it is shown. If so, the helper holds the game for that long *before* it
-reads the controller, so the read lands on a newer sample and the frame still makes the same
-refresh. The helper measures the queue time itself and only sleeps time that was idle; if
-frames start arriving later it backs off for 60 frames and measures again. Without that guard
-the sleep pushed Oddworld's frames a refresh later and made things worse, so the guard is not
-optional.
+Together, a typical game at a 30 limit shows input 25 to 55 ms old before the panel starts
+drawing it. The first and third rows are where fpsvita can act from outside the game.
 
-Input to screen, same content, Antilag off and on. Frame rates were unchanged in every pair.
+## Antilag
+
+Antilag (input to screen, off then on):
 
 | Title (limit) | Off | On | What did it |
 |---|---|---|---|
-| Metal Gear Solid 2 HD (30), menu | 40 ms | 16 ms | fresh poll and the sleep on most frames |
-| Metal Gear Solid 2 HD (30), in-engine cutscene | 32 ms | 16 ms | same |
-| Oddworld: Stranger's Wrath HD (30) | 23 ms | 9 ms | fresh poll; the sleep correctly never started (short queue) |
-| The Wolf Among Us (30) | 56 ms | 42 ms | fresh poll; no room for the sleep at 18 fps |
-| The Swapper (30) | 49 ms | 35 ms | fresh poll; the game is GPU bound |
-| Dead or Alive 5 Plus (60), menu | 49 ms | 38 ms | fresh poll |
-| Dead or Alive 5 Plus (60), gameplay | 35 ms | 33 ms | the game already reads a fresh sample here |
-| Galaxy on Fire 2 (own rate) | 21 ms | 16 ms | fresh poll, two reads a frame |
-| Doom64EX (own rate), intro | 34 ms | 27 ms | fresh poll |
-| The Simpsons: Hit & Run (30) | 32 ms | 32 ms | nothing: the game reads mid-frame, no sample is about to land |
-| Grim Fandango Remastered (30) | | | no clean pair: the two runs did not cover the same content |
+| Metal Gear Solid 2 HD (30), menu | 40 ms | 16 ms | Fresh poll, and the sleep on most frames |
+| Metal Gear Solid 2 HD (30), in-engine cutscene | 32 ms | 16 ms | Same |
+| Oddworld: Stranger's Wrath HD (30) | 23 ms | 9 ms | Fresh poll; the sleep correctly never started (short queue) |
+| The Wolf Among Us (30) | 56 ms | 42 ms | Fresh poll; no room for the sleep at 18 fps |
+| The Swapper (30) | 49 ms | 35 ms | Fresh poll; the game is GPU bound |
+| Dead or Alive 5 Plus (60), menu | 49 ms | 38 ms | Fresh poll |
+| Dead or Alive 5 Plus (60), gameplay | 35 ms | 33 ms | The game already reads a fresh sample here |
+| Galaxy on Fire 2 (own rate) | 21 ms | 16 ms | Fresh poll, two reads a frame |
+| Doom64EX (own rate), intro | 34 ms | 27 ms | Fresh poll |
+| The Simpsons: Hit & Run (30) | 32 ms | 32 ms | Nothing: the game reads mid-frame, no sample is about to land |
+| Grim Fandango Remastered (30) | | | No clean pair: the two runs did not cover the same content |
 
-An earlier version of Antilag slept for most of the frame's spare time instead. At a 60 fps limit
-that moved the read *away* from the moment the new sample lands and made input older; that is
-why the sleep is now whole refreshes only, and never at 60.
+### Fresh poll
 
-## 4. Low latency
+A game that reads just before a new sample lands is a refresh behind for want of about a
+millisecond. So when the sample a game just read is nearly a refresh old, fpsvita reads again
+for up to 2.5 ms and hands over the new sample as soon as it lands.
 
-Lowlat sets the display queue depth to one frame when the game starts up. It only helps a game
-that keeps the second slot full:
+The check is on the sample's age, not on timing, so it needs no knowledge of the game's loop
+and fires at most once per sample. It gained 5 to 14 ms where it applies, 11 to 14 ms on most
+retail titles.
+
+The cost was small. The spin took 0.2 to 0.5 ms and never timed out. Galaxy on Fire 2, which
+reads twice per frame, paid about 3 ms of CPU per frame and lost no frames.
+
+### Whole-refresh sleep
+
+At a 30 limit, a frame often waits in the queue for a refresh or more. If the game's thread
+sleeps that time away right after submitting, its next input read happens later and the
+fresh poll catches a newer sample, while the flip stays where it was. Fresh poll plus sleep
+on Metal Gear Solid 2 HD at 30 gained 17 to 24 ms.
+
+The design follows from three findings:
+
+- **Whole refreshes only, never at 60.** Samples land just after each refresh. A sleep sized
+  to most of the frame's spare time, rather than whole refreshes, moved the read away from
+  that landing and made input older at a 60 limit. At 60 there is no whole refresh to spare.
+- **Only queue time is spent.** The sleep is limited to the time the frame would have waited
+  in the queue, measured while not sleeping. Metal Gear Solid 2 HD at 30 queues 27 ms, so a
+  refresh of sleep moves only the read. Oddworld queues 7 ms, which leaves no whole refresh.
+- **A guard backs it off.** Without a back-off guard, the sleep pushed Oddworld's frames a
+  refresh later, which made latency worse. With it, flips arriving later than before the
+  sleep turn the sleep off and it learns again. A missed frame does the same.
+
+The sleep also runs only on games whose controller reads cluster right after they submit a
+frame. That is the only loop shape where a later read is a fresher read.
+
+## Lowlat
 
 | Title | Input to screen |
 |---|---|
@@ -85,50 +102,99 @@ that keeps the second slot full:
 | Metal Gear Solid 2 HD (60), menu | 26 ms with or without Lowlat |
 | The Wolf Among Us (30) | 11 ms with Antilag, 8 ms with both; within the noise |
 
-The Metal Gear Solid 2 and Wolf Among Us rows were taken with an earlier measure that aged the
-sample at the next flip rather than at that frame's own flip. It understates a two-deep queue
-by up to a frame, so those numbers compare with each other but not with the INPUT figures
-elsewhere in this file.
+The Metal Gear Solid 2 HD and The Wolf Among Us rows used an older measure that aged the
+sample at the next flip instead of at that frame's own flip. It understates a two-deep queue
+by up to a frame, so these two rows compare with each other but not with other INPUT figures.
 
-The overlay's QUEUE row tells you which case a game is: near a whole frame means Lowlat will
-pay, a few milliseconds means it will not. Some homebrew ports set up graphics in a way the
-helper cannot see (Doom64EX); the overlay reports Lowlat as pending there and it has no
-effect.
+A two-deep queue is a frame of latency kept as insurance against slow frames. Lowlat gives
+that frame back where frames actually wait in the queue (Dead or Alive 5 Plus gained 18 ms)
+and does little where they do not. The queue depth is fixed when the game starts its
+graphics, so Lowlat applies at the next launch. Doom64EX starts its graphics outside the call
+fpsvita hooks, so Lowlat cannot apply there.
 
-## 5. Tearing
+## Tearing
 
-With vsync, a new frame is shown at the next refresh. "Vsync off" on PC shows it immediately,
-mid-refresh, with a visible seam where the old and new frames meet, and that is the lowest
-latency a display can give.
+The display call available to games refuses an immediate flip on every title tested (error
+INVALID_UPDATETIMING), and the screen stops updating. The kernel's display call accepts it.
+So Tearing sends each flip through fpsvita's kernel module, which allows it only for the
+running game, and falls back to a normal flip when that fails.
 
-- The user-mode display call the games use refuses an immediate flip on every title tested
-  (error `INVALID_UPDATETIMING`), and the screen stops updating.
-- The kernel's display call accepts it. fpsvita's kernel module exposes that, and the helper
-  routes every flip through it in Tearing mode. The flip really is immediate: with the
-  "frame shown" wait timed right after each flip, Doom64EX's intro ran at 43 fps on normal
-  flips (the wait blocks until the refresh) and 563 fps on kernel flips (it returns at once),
-  and the seams are visible on a slow-motion phone recording.
+Timing the game's wait for each frame to be shown, Doom64EX's intro ran it 43 times a second
+with normal flips and 563 times a second with kernel flips. Seams were visible on a
+slow-motion phone recording.
 
-Tearing mode is therefore Uncapped plus immediate flips, through the kernel module only, which
-is why the lite plugin cannot offer it.
+## Limiter
 
-## 6. Things that were looked at and not built
+The Limiter holds the game to a fixed schedule: each slot is one period after the previous
+slot, so the average rate is exact. A frame late by less than a period shortens the next
+slot so the schedule catches up. A later frame restarts the schedule rather than letting
+frames burst. The game's own timing still reads real time, so nothing drifts. It was tested on
+Doom64EX at 30.
 
-- **Adaptive vsync** (skip the wait when the frame is already late): the data so far shows few
-  frames missing by a small margin, so it is on hold.
-- **50 Hz or 48 Hz panel modes** for an even 50 or 48 fps: the firmware lists such modes. One
-  try on an OLED Vita got the panel to about 47.8 Hz by switching the output mode and going
-  through sleep and resume; not usable yet.
-- **Scanline sync** from the kernel, and a **fresher button read** straight from the system
-  controller chip: possible in principle, unmeasured.
-- **A time-based limiter locked to the refresh**: the Limiter keeps a fixed schedule, so its
-  average rate is the cap exactly, but its slots are not phase-locked to the vblank.
+## Vsync auto
+
+Auto mode must not switch its wait on and off every few frames. A plain pair of thresholds
+does exactly that: once the wait engages, the game's next own wait resets the count and
+releases it again. So engaging needs 30 frames without a wait, while releasing needs 60
+paced frames in a row, which a game that waits only now and then never reaches. A game that
+really resumes waiting reaches it in about a second.
+
+Engaging also needs the game to present at least 10% faster than the limit. A game already
+held at or below the limit by a wait fpsvita cannot see, or by its GPU, gains nothing from a
+second wait and would only be slowed to the next step.
+
+## Negative and inconclusive results
+
+- **The Simpsons: Hit & Run**: no gain. It reads input mid-frame, when no sample is about to
+  land.
+- **Dead or Alive 5 Plus gameplay**: 35 to 33 ms. The game already reads a fresh sample.
+- **Grim Fandango Remastered**: no clean pair, because the two runs did not cover the same
+  content.
+- **Metal Gear Solid 2 HD at 60**: Lowlat changed nothing (26 ms either way, older measure).
+- **The Wolf Among Us**: Lowlat within the noise (older measure).
+
+## Panel refresh (experimental)
+
+Lowering the OLED's refresh by stretching its vertical timing measured 50.000, 45.10 and
+40.000 Hz, with no visible artefacts anywhere from 24 to 50 Hz. The controller follows the
+refresh: a blocking read returned 60.3 samples a second at 60 Hz and 40.1 at 40 Hz.
+
+- **Doom64EX at 40 Hz, Default limit**: a steady 40.0 fps in light scenes, 37 to 38 in heavy
+  ones. Input to screen rose to about 61 ms, against about 34 ms at 60 Hz: fewer samples, and
+  the game queues about two frames, which Lowlat cannot reach on this title.
+- **Uncharted: Golden Abyss at a 60 limit**: 35 to 36 fps at 60 Hz with 40% of vblanks
+  missed, so frame times alternated. At a 36 Hz panel it showed one frame per refresh.
+- **Absolute Drift at 40 Hz, 60 limit**: a steady 40 fps in gameplay with 12 ms of CPU per
+  frame (14 ms worst), 5 missed refreshes in 600 frames, about 47 ms input to screen. It
+  looked very smooth.
+- **Doom64EX, by eye**: at 37 to 38 fps on a 40 Hz panel its frames alternated between one
+  and two refreshes, and it looked choppier than a steady 30. A panel rate the game cannot
+  hold is worse than none.
+
+So panel refresh is for games that cannot hold 60 but beat 30 and keep their own time; it
+trades latency for even frame pacing.
+
+Sleep: resuming while the timing was stretched latched part of the display setup. The game
+was fine, but after it exited the home screen's top layers flickered half-drawn until the
+next sleep or a reboot. fpsvita now restores the stock timing before sleep and re-applies the
+rate after resume; with that, the rate came back at 40 Hz and the home screen stayed clean.
+
+## Ideas examined and not built
+
+- **Adaptive vsync** (flip without waiting when a frame is late): few frames miss by a small
+  margin. On hold.
+- **The firmware's own 48 and 50 Hz output modes**: switching mode reached about 47.8 Hz
+  only after a sleep and resume, and one mode blanked the panel until a reboot. The timing
+  patch above replaced this.
+- **Kernel scanline sync** and **a fresher button read from the system controller chip**:
+  not measured.
+- **A time-based limiter locked to the refresh phase**: the Limiter keeps an exact average
+  rate but is not phase-locked.
 
 ## Further reading
 
-Projects whose source informed the design: Framecapper, VitaGrafix and VGi, PSVshell and
-PSVshellPlus, divasplit, vitaGL, libvita2d, RetroArch's GXM driver and Vita3K for the Vita side;
-NVIDIA Reflex, AMD Anti-Lag 2, Intel XeLL, LatencyFleX, RTSS, Special K, RetroArch's frame delay
-and Android's Swappy for frame pacing and latency on PC and mobile; SaltyNX and FPSLocker
-(Switch), GoldHEN (PS4) and gamescope for other console and compositor scenes. The henkaku wiki
-pages on SceCtrl, SceSyscon and SceDisplay describe the hardware side.
+- The [henkaku wiki](https://wiki.henkaku.xyz/) pages on SceCtrl, SceDisplay and SceSyscon.
+- PC latency work that shaped the options: NVIDIA Reflex, AMD Anti-Lag 2, Intel XeLL,
+  LatencyFleX, RTSS, Special K, RetroArch's frame delay and Android Swappy.
+- [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) lists every project whose source
+  informed the design.

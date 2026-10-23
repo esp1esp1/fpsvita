@@ -32,9 +32,9 @@ target_include_directories(fpsvita-ui BEFORE PRIVATE
 # produces no import entries and every PAF call returns -1 at runtime.
 #
 set(PAF_STUB_DIR ${CMAKE_CURRENT_BINARY_DIR}/paf_stubs)
-# Weak imports: an unresolved PAF NID leaves its stub returning -1 instead of
-# making the loader reject the whole module. module_start checks every stub it
-# needs and bails (with the offender in boot.log) if any is unresolved.
+# Weak imports: an unresolved PAF NID does not make the loader reject the whole
+# module. Imports bind lazily on first call; one the firmware lacks traps at
+# pc=0 with ip = the stub address.
 set(PAF_STUB_LIB ${PAF_STUB_DIR}/libScePaf_stub_weak.a)
 add_custom_command(
   OUTPUT ${PAF_STUB_LIB}

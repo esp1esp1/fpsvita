@@ -24,12 +24,17 @@ static inline unsigned fpsvitaCompatFlags(const char *tid)
 /* The known problem at this limit, or NULL when the table names none for it.
  * The overlay shows it as the last-resort tip and the quick menu marks the
  * same case with (!). read=peek is the fix for the missing input (NOINPUT).
+ * A limit equal to the game's own rate (`native`, 0 or less when unknown)
+ * changes nothing the rate problems depend on; a cap still shakes WipEout.
  * Each string fits the ~20 characters next to the TIP label. */
-static inline const wchar_t *fpsvitaCompatWarn(unsigned flags, int32_t interval, bool readPeek)
+static inline const wchar_t *fpsvitaCompatWarn(unsigned flags, int32_t interval, int32_t native,
+                                               bool readPeek)
 {
 	bool above = interval == FPSVITA_INTERVAL_60FPS || interval == FPSVITA_INTERVAL_UNCAPPED;
 	if (interval == FPSVITA_INTERVAL_OFF)
 		return NULL;
+	if (native > 0 && interval == native)
+		flags &= FPSVITA_COMPAT_SHAKE;
 	if ((flags & FPSVITA_COMPAT_NOINPUT) && above && !readPeek)
 		return L"NO INPUT ABOVE 59";
 	if ((flags & FPSVITA_COMPAT_FREEZE) && above)

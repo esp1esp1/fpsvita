@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.3.0 (2026-10-23)
+
+### Added
+
+- `log=1` in `config.txt`: the helper writes a `helper: rate` line (frame rate, CPU time,
+  input age, options in force) to `helper.log` every 3000 frames. Off by default.
+- `tools/ingest_playlog.py`: pulls those lines off the console over FTP into a TSV for a game
+  report. See "Reporting a game" in the guide and README.
+
+### Changed
+
+- Quick menu: Save moves to the bottom right, the Limiter to the FPS row, the Vsync checkbox
+  (shown only with `vsync=0` or `1`) next to Save.
+- The compatibility warning (`(!)` and the overlay's known-problem tip) no longer shows when
+  the limit equals the game's own rate, where a speed-tied game runs at its normal speed.
+- Panel refresh (`panel=`) is documented in the guide, still experimental: tested on the OLED
+  model (now including sleep and resume); the Slim should accept it but is untested.
+- Documentation rewritten: README, guide, developer guide, compatibility list and latency
+  measurements.
+
+### Fixed
+
+- Panel refresh: putting the Vita to sleep while a game ran at a panel rate left the home
+  screen's top layers flickering after the game exited, until the next sleep or a reboot.
+  The kernel now restores the stock timing before sleep and re-applies the rate after resume.
+- The Vsync checkbox is saved to `config.txt` at once; before, a toggle was lost at reboot
+  unless another global setting changed after it.
+
 ## v0.2.1 (2026-10-20, experimental)
 
 ### Added

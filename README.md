@@ -1,193 +1,153 @@
 # fpsvita
 
-Lower input latency for PS Vita games, an overlay that measures it, and frame-rate limits,
-all controlled live from the quick menu.
+fpsvita is a set of taiHEN plugins for the PS Vita that lowers input latency, shows what a
+game's frames and input are doing, and sets frame-rate limits. You control it from the
+quick menu while a game runs, and it keeps a profile per game.
 
-<p align="center">
-  <img src="docs/images/quick-menu.jpg" width="49%" alt="The fpsvita rows in the quick menu: FPS limit with Save, HUD mode and corner, Latency options" />
-  <img src="docs/images/overlay.jpg" width="49%" alt="The Full overlay over a game: FPS, limit, CPU time, input-to-screen latency, queue time" />
-</p>
+![The Full overlay over a game](docs/images/overlay.jpg)
 
-**What it does**
+*The Full overlay. The current build also shows TIP and LAST rows below LIMITER.*
 
-- **Anti-lag.** Most games read the controller a hair before the new sample arrives and play on
-  input a whole frame old. Anti-lag fixes that: 11 to 24 ms less input-to-screen latency on
-  most of the titles measured, with no change in frame rate and no change in game speed. It
-  is on by default in `auto` mode (fresh poll only); untick the box and tick it again for the
-  full version that also sleeps whole vblanks at a 30 or 20 limit. It works at the game's own
-  rate, so it can be tried on any game, including the many whose frame rate cannot be changed.
-  Seven titles have before-and-after numbers so far; how many others gain is not yet known,
-  which is what the overlay's LAST row is for. It cannot help a game that reads the controller
-  mid-frame; the guide lists both kinds.
-- **Overlay.** Frame rate, frametime, CPU time, and the number that matters: input-to-screen
-  latency, per frame, with a before-and-after of the last thing you toggled and a tip for what
-  to try next. Mini (two lines) or Full (a box), in any corner. The only way on the Vita to
-  see why a game feels the way it does.
-- **Low latency, Limiter, Tearing.** One frame less in the display queue; a limiter for any
-  rate (40, 45, 50) without vsync; and PC-style vsync-off tearing for the lowest latency the
-  hardware allows.
-- **Frame limit on the fly.** Default, 60, 30, 20, Uncapped or Tearing, switched while the game
-  runs. Cap a stuttery 60 fps game to a solid 30, or let a 30 fps game run at 60 if it can.
-  Be clear about the limit of this: it only works on games that keep their own time, and many
-  Vita games do not, running too fast or in slow motion at any rate but their own. The
-  [compatibility list](docs/compatibility-list.md) has the known good and the known bad.
-- **Per-game profiles.** Save stores the whole row for that title; it is applied at every later
-  launch and the global defaults come back when the game exits.
-- **Lite mode.** One plugin and a text file, if you don't want the menu.
+## What it does
+
+- **Antilag**: hands the game a newer controller sample so a button press reaches the screen
+  sooner, without changing the game's frame rate. On by default in its automatic form; the
+  full form also moves the game's input read later at a 30 or 20 limit.
+- **Overlay**: frame rate, CPU time, input age (INPUT) and queue time over the game, plus a
+  TIP row with advice and a LAST row with before/after numbers for your last change.
+- **Lowlat, Limiter, Tearing**: a shorter display queue, a time-based limit for rates such as
+  40 or 45, and immediate flips.
+- **Frame limits**: 60, 30, 20 fps or uncapped, plus a Vsync wait for games that never wait.
+- **Per-game profiles**: Save stores a game's settings, which load at its next launch.
+- **Panel refresh (experimental)**: runs the screen at a lower rate such as 40 or 45 Hz for
+  one game, so a game that cannot hold 60 gets evenly paced frames. Tested on the OLED model;
+  Slim reports welcome.
+- **Lite mode**: one plugin and two text files, without the quick menu or overlay.
+
+Seven titles have measured before/after numbers in
+[the latency measurements](docs/latency-measurements.md). How much other games gain is
+unknown: the overlay's LAST row lets you measure your own.
+
+## Before you change the frame rate
+
+Many Vita games tie their speed to the frame rate. Above their own rate they run too fast,
+below it they run in slow motion. Nothing outside the game can fix that. `Default` leaves the
+game's pacing alone and is always safe. Check the
+[compatibility list](docs/compatibility-list.md) before you pick a limit, and see
+[why some games break](docs/GUIDE.md#why-some-games-break-at-another-frame-rate).
 
 ## Install
 
-You need a Vita running HENkaku or ensō (so taiHEN is loading plugins) and a way to copy
-files onto it, such as VitaShell's FTP or USB mode.
+### Requirements
 
-1. Download `fpsvita-v0.2.0.zip` from the
-   [Releases](https://github.com/esp1esp1/fpsvita/releases) page and unzip it. Inside are a
-   `ur0` folder, a `lite` folder and the docs.
-2. Copy the **contents** of the `ur0` folder onto the Vita's `ur0:` partition, keeping the
-   folder structure. Afterwards these four files must exist on the Vita:
+- A Vita on HENkaku or enso, so taiHEN loads plugins.
+- A way to copy files: VitaShell's FTP server or USB.
+- Optional: kubridge v0.3 or later, so a shell crash is logged.
+
+fpsvita is tested on one retail OLED Vita (PCH-1000) with enso on firmware 3.65. Firmware
+3.60 is expected to work but is untested. Reports from other models and firmware are
+especially welcome.
+
+### Steps
+
+1. Download `fpsvita-vX.Y.Z.zip` from
+   [the releases page](https://github.com/esp1esp1/fpsvita/releases) and unpack it.
+2. Copy the files from its `ur0` folder to the same paths on the Vita:
+
+   | File | Path on the Vita |
+   |---|---|
+   | Kernel module | `ur0:tai/fpsvita-kernel.skprx` |
+   | Quick menu and overlay | `ur0:tai/fpsvita-ui.suprx` |
+   | Per-game helper | `ur0:tai/fpsvita-helper.suprx` |
+   | Menu resources | `ur0:data/fpsvita/fpsvita_plugin.rco` |
+
+3. Find the taiHEN config in use. If `ux0:tai/config.txt` exists, taiHEN reads it and
+   ignores `ur0:tai/config.txt`, so edit that one. In VitaShell, select the file and press
+   Triangle, then Open with Text Editor.
+4. Add each line under its section header. Create a header if it is missing:
 
    ```
-   ur0:tai/fpsvita-kernel.skprx
-   ur0:tai/fpsvita-ui.suprx
-   ur0:tai/fpsvita-helper.suprx
-   ur0:data/fpsvita/fpsvita_plugin.rco
-   ```
-
-   `ur0:data/fpsvita` does not exist yet on a fresh install; create it. Skip the `lite` folder,
-   it is a separate variant (see [Lite mode](#lite-mode)), never install both.
-3. Open your taiHEN config in a text editor (in VitaShell: highlight the file, Triangle, Open
-   with Text Editor). It is `ur0:tai/config.txt`, **unless** `ux0:tai/config.txt` exists, in
-   which case taiHEN uses that one and you must edit it instead. Add one line under each of
-   these three section headers. The headers are probably already there; if a header is
-   missing, add it:
-
-   ```ini
    *KERNEL
    ur0:tai/fpsvita-kernel.skprx
-
    *main
    ur0:tai/fpsvita-ui.suprx
-
    *ALL
    ur0:tai/fpsvita-helper.suprx
    ```
 
-   If you have PSVshellPlus, put the `fpsvita-ui.suprx` line **above** its `*main` line so the
-   fpsvita rows appear above System Control (below it puts them underneath).
-4. Reboot the Vita. Start any game, hold the PS button, and scroll down in the quick menu: the
-   three fpsvita rows appear above System Control. If they do not, see
-   [Good to know](#good-to-know).
+   With PSVshellPlus installed, put the `fpsvita-ui` line above `PSVshellPlus_Shell.suprx`
+   in `*main` to show fpsvita's rows above PSVshellPlus's. Below it puts them below.
+5. Save the file and reboot the Vita.
 
-**Updating:** replace all four files with the ones from the new zip, then reboot. Never mix
-files from two versions. **Uninstalling:** remove the three lines from the config, reboot,
-delete the files; `ur0:data/fpsvita/` also holds your settings, delete it if you do not want
-them back later.
+### Check that it worked
 
-## Using it
+Hold the PS button to open the quick menu. You should see three new rows starting with
+`FPS:`, `HUD:` and `Latency:`. fpsvita also creates `ur0:data/fpsvita/config.txt` on its
+first boot.
 
-**Start with the overlay.** Turn the HUD to Full and read the LAST row: it shows the
-input-to-screen time before and after, on the game you are playing. Antilag is already on in
-`auto` mode (fresh poll only); to add the whole-vblank sleep, turn it off and on again, or set
-`antilag=1`. That works on any game and changes nothing else.
+If the rows are missing, check that the `.rco` file is at its exact path and that the
+kernel line sits under `*KERNEL`. Without either, the quick-menu plugin quits without
+showing anything. `ur0:data/fpsvita/boot.log` says which one it found missing.
 
-**Read [docs/GUIDE.md](docs/GUIDE.md) before you change a game's rate.** It explains what each
-mode and option does, what it costs, and what to do when a game misbehaves. The short version:
-many Vita games, PS2 and PS3 remasters and Koei Tecmo titles especially, advance their world a
-fixed step per frame. On those, a higher limit runs the game too fast and a lower one plays as
-slow motion, and nothing done from outside the game can change that. Default is always safe.
-Check the [compatibility list](docs/compatibility-list.md) before you change a game's rate.
+### Update
 
-**Do not run Framecapper alongside fpsvita.** Both hook the same display waits, and the result
-is undefined. Frame-rate patches from other plugins coexist and show up as the `(og:..)`
-value. Other plugin combinations are untested.
+Replace all four files together and reboot. Never mix files from two versions: the modules
+share one block of state, and a mismatch can crash. Your settings in `ur0:data/fpsvita/`
+are kept.
 
-Open the quick menu (hold PS) with a game running and scroll down:
+### Uninstall
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ ▣ FPS:     [<]  30fps (og:60)  [>]                  [Save] │
-│   HUD:     [<]  Mini  [>]                 Corner: [<] TL [>] │
-│   Latency: [ ] Lowlat  [ ] Antilag       Limiter: [<] off [>] │
-└─────────────────────────────────────────────────────────────┘
-```
+1. Remove the three fpsvita lines from the taiHEN config.
+2. Delete the three `.skprx`/`.suprx` files from `ur0:tai/`.
+3. Delete the `ur0:data/fpsvita/` folder (menu resources, settings and logs), unless you
+   want your settings back after a reinstall; then delete only the `.rco` file.
+4. Reboot.
 
-**FPS row.** Left and right cycle the limit. `(og:60)` is the rate the game asked for by
-itself, so you can see what you are changing.
+## First use
 
-| Limit | What you get |
-|-------|--------------|
-| Default | The game's own rate, untouched. |
-| 60fps, 30fps, 20fps | The game waits one, two or three screen refreshes per frame. A steady 30 often feels better than a game that can't reach 60. Only on games that keep their own time. |
-| Uncapped | The game runs as fast as it renders; the screen shows the newest complete frame each refresh, no tearing. |
-| Tearing | Uncapped, and each new frame goes to the screen immediately, mid-refresh. Lowest latency, visible seams. |
+1. Start a game.
+2. Hold the PS button. On the `HUD:` row, press `>` until it reads `Full`. Close the menu.
+3. Play for a few seconds. The `INPUT:` row shows how old your input is when a frame
+   reaches the screen, for example `38.2 ms`.
+4. Open the quick menu and untick `Antilag`. It starts ticked, in its automatic form.
+   Play on. After about 3 seconds LAST reads something like `ANTI-LAG 31>38 MS`: INPUT
+   before and after the change, in milliseconds.
+5. Tick `Antilag` again. This turns on full Antilag. LAST shows the new before/after pair.
+6. Press `Save` to keep this game's settings.
 
-A game that runs too fast above its own rate, or in slow motion below it, ties its game speed
-to the frame rate. Put it back on Default and Save; there is no way to fix that from outside.
-
-**Save** stores the row as that title's profile. With no game running, the rows set the
-defaults for everything.
-
-**HUD row.** Overlay off, Mini or Full, and which corner.
-
-**Latency row.** Antilag is on by default in `auto` mode (fresh poll only); ticking it off and
-on again enables the full version with the whole-vblank sleep. To get back to auto, set
-`antilag=auto` in `config.txt` (or on the title's `state.txt` line) by hand. Lowlat helps
-titles that keep their display queue full (the overlay's QUEUE row near a full frame says so)
-and applies from the game's next launch. Limiter holds Uncapped games to a chosen rate without
-vsync, for 40, 45 or 50 fps or for games that cannot be limited the normal way. It changes the
-rate too, so the same caveat applies. The guide has the reasoning behind each, with numbers.
-
-**Vsync checkbox.** Appears only when `config.txt` has `vsync=0` or `vsync=1` instead of the
-default `vsync=auto`. With auto, forced vsync engages by itself on the few games that never
-wait for the screen. The checkbox is a global setting, not part of a title's profile.
-
-## Overlay
-
-Mini is two green lines: `30 FPS  LIMIT 30 / OG:60`, then whatever is active, in short
-form: `VSYNC`, `LL` (Lowlat on; `LL?` until the next launch), `AL` (Antilag auto) or `AL+`
-(full), `LIM 40`. Full is a box with a row each for FPS and
-frametime, LIMIT, CPU, INPUT (the frame's newest controller sample to its flip, which is
-input-to-screen minus the panel itself), QUEUE (submit to flip), ANTI-LAG, LOW LAT, LIMITER,
-TIP (what the readings say is worth trying next), LAST (INPUT before and after the last
-toggle, the real evidence) and TITLE. It costs nothing while off. Every row is explained in the
-guide.
+Next, read the [user guide](docs/GUIDE.md) for every option and what the overlay's rows
+mean, and the [compatibility list](docs/compatibility-list.md) before trying a limit.
 
 ## Lite mode
 
-`fpsvita-helper-lite.suprx` is the whole helper with no menu and no overlay. Install only that
-file under `*ALL`, write `ur0:data/fpsvita/config.txt` and `state.txt` by hand (keys in the
-guide), and every option except Tearing works; changes apply at the game's next launch. Do not
-install it together with the full set.
+`fpsvita-helper-lite.suprx`, in the zip's `lite` folder, is the helper without the kernel
+module, quick menu or overlay. You set it up by editing two text files. Install it instead
+of the full set, never next to it. See [Lite mode](docs/GUIDE.md#lite-mode).
 
-## Good to know
+## Conflicts and recovery
 
-- **Files.** `ur0:data/fpsvita/config.txt` holds the defaults, `state.txt` one profile line per
-  title. Plain text, written by the menu. `state.txt` is safe to edit at any time; the menu
-  only reads `config.txt` at boot and rewrites it on every change, so reboot after editing
-  that one.
-- **Tested on** one retail Vita with ensō on 3.65; 3.60 should work. If a title misbehaves,
-  please [open an issue](https://github.com/esp1esp1/fpsvita/issues) with its id and the lines
-  from `ur0:data/fpsvita/helper.log`.
-- **If the quick menu rows are missing**, first check the four files and three config lines
-  above. If the rows were there and disappear after a boot, hold L while powering on to skip
-  plugins, comment the `fpsvita-ui` line out of the config, and open an issue with
-  `ur0:data/fpsvita/boot.log`.
-- **Changes between versions:** [CHANGELOG.md](CHANGELOG.md).
-- **Building and how it works:** [docs/HACKING.md](docs/HACKING.md). The measurements behind the
-  options: [docs/latency-measurements.md](docs/latency-measurements.md).
+Do not run Framecapper with fpsvita: both hook the same display waits. Frame-rate patches
+from other plugins, such as VitaGrafix FPS patches, work alongside it. The quick menu shows
+the patched rate as the game's own (`og:`), and an fpsvita limit overrides it. Other
+combinations are untested.
 
-## Credits
+If the Vita's shell fails to start after installing:
 
-- Vblank hook approach from [Framecapper](https://github.com/Rinnegatamante/Framecapper) by Rinnegatamante.
-- Quick menu and HUD integration pattern from [PSVshellPlus](https://github.com/GrapheneCt/PSVshellPlus) by GrapheneCt.
-- ScePaf names and export lists from [ScePaf-RE](https://github.com/VitaArchive/ScePaf-RE).
-- RCO built with [acdc](https://github.com/isage/acdc) by isage; crash traces through [kubridge](https://github.com/bythos14/kubridge) by bythos14.
+1. Hold L while powering on. enso then skips plugins.
+2. Open the taiHEN config in VitaShell and put `#` in front of the `fpsvita-ui` line.
+3. Reboot, and report the problem with `ur0:data/fpsvita/boot.log` attached.
 
-## License
+## Reporting a game and getting help
 
-GPL-3.0, see `LICENSE`. Third-party components and their licences are in
-`THIRD_PARTY_NOTICES.md`.
+Open an issue at [github.com/esp1esp1/fpsvita/issues](https://github.com/esp1esp1/fpsvita/issues).
+[Reporting a game](docs/GUIDE.md#reporting-a-game) lists what to include and how to collect
+logs. Changes between versions are in [CHANGELOG.md](CHANGELOG.md).
 
-## Vibecoding notice
+## Credits and licence
 
-fpsvita was vibecoded with care. I'm not a developer, but I'm also not clueless. This software will be kept maintained in the future, and I'll respond to any issues.
+fpsvita is licensed under GPL-3.0 (see [LICENSE](LICENSE)). Its display-wait hooks follow
+Framecapper by Rinnegatamante, and its quick-menu hook and overlay style follow PSVshellPlus
+by GrapheneCt. All credits and licences are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+> fpsvita was vibecoded with care. I'm not a developer, but I'm also not clueless. This software will be kept maintained in the future, and I'll respond to any issues.
