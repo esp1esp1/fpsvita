@@ -99,6 +99,8 @@ Hold the PS button to open the quick menu. You should see three new rows startin
 `FPS:`, `HUD:` and `Latency:`. fpsvita also creates `ur0:data/fpsvita/config.txt` on its
 first boot.
 
+![fpsvita's three rows in the quick menu over The Swapper: FPS, Limiter, HUD, Corner, Lowlat, Antilag and Save](docs/images/quick-menu.jpg)
+
 If the rows are missing, check that the `.rco` file is at its exact path and that the
 kernel line sits under `*KERNEL`. Without either, the quick-menu plugin quits without
 showing anything. `ur0:data/fpsvita/boot.log` says which one it found missing.
