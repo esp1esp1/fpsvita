@@ -4,13 +4,13 @@ fpsvita is a set of taiHEN plugins for the PS Vita that lowers input latency, sh
 game's frames and input are doing, and sets frame-rate limits. You control it from the
 quick menu while a game runs, and it keeps a profile per game.
 
-| Lowlat and Antilag off | Lowlat and Antilag on |
-|---|---|
-| ![Dead or Alive 5 Plus with Lowlat and Antilag off: INPUT 32.7 ms](docs/images/doa5-off.jpg) | ![Dead or Alive 5 Plus with Lowlat and Antilag on: INPUT 21.0 ms](docs/images/doa5-lowlat.jpg) |
+| Overlay | Frame limit | Quick menu |
+|---|---|---|
+| ![Dead or Alive 5 Plus with Lowlat and Antilag on: INPUT 21.0 ms at 60 fps](docs/images/doa5-lowlat.jpg) | ![The Swapper at a 30 limit: a steady 30 fps](docs/images/swapper-30.jpg) | ![fpsvita's three rows in the quick menu: FPS, Limiter, HUD, Corner, Lowlat, Antilag and Save](docs/images/quick-menu.jpg) |
 
-*Dead or Alive 5 Plus at its own 60 fps, Full overlay. INPUT drops from 33 to 21 ms and the
-frame rate stays at 60. Nearly all of it is Lowlat: at a game's own 60, Antilag only hands it
-a fresher sample. The TIP row suggested Lowlat in the first shot.*
+*Left: Dead or Alive 5 Plus with Lowlat and Antilag, INPUT 21 ms at 60 fps. Middle: The
+Swapper held at a steady 30. Right: fpsvita's rows in the quick menu. Before and after
+shots are [below](#before-and-after).*
 
 ## What it does
 
@@ -34,13 +34,15 @@ Seven titles have measured before/after numbers in
 [the latency measurements](docs/latency-measurements.md). How much other games gain is
 unknown: the overlay's LAST row lets you measure your own.
 
-## Before you change the frame rate
+## Before and after
 
-Many Vita games tie their speed to the frame rate. Above their own rate they run too fast,
-below it they run in slow motion. Nothing outside the game can fix that. `Default` leaves the
-game's pacing alone and is always safe. Check the
-[compatibility list](docs/compatibility-list.md) before you pick a limit, and see
-[why some games break](docs/GUIDE.md#why-some-games-break-at-another-frame-rate).
+| Lowlat and Antilag off | Lowlat and Antilag on |
+|---|---|
+| ![Dead or Alive 5 Plus with Lowlat and Antilag off: INPUT 32.7 ms](docs/images/doa5-off.jpg) | ![Dead or Alive 5 Plus with Lowlat and Antilag on: INPUT 21.0 ms](docs/images/doa5-lowlat.jpg) |
+
+*Dead or Alive 5 Plus at its own 60 fps, Full overlay. INPUT drops from 33 to 21 ms and the
+frame rate stays at 60. Nearly all of it is Lowlat: at a game's own 60, Antilag only hands it
+a fresher sample. The TIP row suggested Lowlat in the first shot.*
 
 | Default | 30 limit |
 |---|---|
@@ -49,6 +51,14 @@ game's pacing alone and is always safe. Check the
 *The Swapper keeps its own time, so a limit is safe. At Default it runs an uneven 37 fps; at
 the 30 limit it holds a steady 30 and INPUT drops from 40 to 36 ms. LAST shows the trade:
 6 ms less input lag for 6 fps fewer.*
+
+## Before you change the frame rate
+
+Many Vita games tie their speed to the frame rate. Above their own rate they run too fast,
+below it they run in slow motion. Nothing outside the game can fix that. `Default` leaves the
+game's pacing alone and is always safe. Check the
+[compatibility list](docs/compatibility-list.md) before you pick a limit, and see
+[why some games break](docs/GUIDE.md#why-some-games-break-at-another-frame-rate).
 
 ## Install
 
@@ -98,8 +108,6 @@ especially welcome.
 Hold the PS button to open the quick menu. You should see three new rows starting with
 `FPS:`, `HUD:` and `Latency:`. fpsvita also creates `ur0:data/fpsvita/config.txt` on its
 first boot.
-
-![fpsvita's three rows in the quick menu over The Swapper: FPS, Limiter, HUD, Corner, Lowlat, Antilag and Save](docs/images/quick-menu.jpg)
 
 If the rows are missing, check that the `.rco` file is at its exact path and that the
 kernel line sits under `*KERNEL`. Without either, the quick-menu plugin quits without
