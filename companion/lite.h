@@ -32,7 +32,7 @@ LITE_UNUSED static void fpsvitaSetTitleIdPart(int32_t part, uint32_t v)
 LITE_UNUSED static void fpsvitaSetHud(int32_t mode, int32_t pos) { (void)mode; (void)pos; }
 LITE_UNUSED static void fpsvitaSetAdvanced(int32_t flags, int32_t sc)
 {
-	s_kstate.adv_flags = flags & (FPSVITA_ADV_LOWLAT | FPSVITA_ADV_JIT | FPSVITA_ADV_AUTO);   /* no kernel: no tear */
+	s_kstate.adv_flags = flags & (FPSVITA_ADV_LOWLAT | FPSVITA_ADV_JIT);   /* no kernel: no tear */
 	s_kstate.softcap = (sc >= FPSVITA_SOFTCAP_MIN && sc <= FPSVITA_SOFTCAP_MAX) ? sc : 0;
 }
 LITE_UNUSED static void fpsvitaSetStats(const FpsvitaStats *in) { (void)in; }

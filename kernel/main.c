@@ -13,6 +13,7 @@
 #include <psp2kern/display.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/kernel/suspend.h>
+#include <psp2kern/kernel/sysroot.h>
 #include <taihen.h>
 #include <string.h>
 
@@ -186,8 +187,7 @@ int fpsvitaSetFrameBufImmediate(const void *user_fb)
 void fpsvitaSetAdvanced(int32_t flags, int32_t softcap)
 {
 	SYSCALL_ENTER
-	g_adv_flags = flags & (FPSVITA_ADV_LOWLAT | FPSVITA_ADV_JIT
-	                       | FPSVITA_ADV_TEAR | FPSVITA_ADV_AUTO);
+	g_adv_flags = flags & (FPSVITA_ADV_LOWLAT | FPSVITA_ADV_JIT | FPSVITA_ADV_TEAR);
 	g_softcap = (softcap >= FPSVITA_SOFTCAP_MIN && softcap <= FPSVITA_SOFTCAP_MAX) ? softcap : 0;
 	SYSCALL_EXIT
 }
@@ -330,7 +330,7 @@ static int panelFind(void)
 }
 
 /* hz 0 restores the stock timing. Kernel callers only: the syscall checks
- * the owner first. */
+ * the caller first. */
 static void panelSet(int32_t hz)
 {
 	if (g_panel_lock < 0)
@@ -355,10 +355,13 @@ static void panelSet(int32_t hz)
 	ksceKernelUnlockMutex(g_panel_lock, 1);
 }
 
+/* The running title's helper at launch, or the shell's FPS row while that
+ * title runs (`experimental=1`). Released with the title either way. */
 void fpsvitaSetPanel(int32_t hz)
 {
 	SYSCALL_ENTER
-	if (callerIsOwner())
+	if (callerIsOwner()
+	    || (g_owner_pid >= 0 && ksceKernelGetProcessId() == ksceKernelSysrootGetShellPid()))
 		panelSet(hz);
 	SYSCALL_EXIT
 }

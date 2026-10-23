@@ -62,6 +62,7 @@ run_one() {   # name
 {
     extract_range "$ROOT/companion/main.c" '^static int lineIsGlobalKey' || exit 1
     extract_range "$ROOT/companion/main.c" '^static int readFileInto' || exit 1
+    extract_range "$ROOT/companion/main.c" '^static int antilagValue' || exit 1
     extract_range "$ROOT/companion/main.c" '^static void parseConfigLines' || exit 1
     extract_range "$ROOT/companion/main.c" '^static __attribute__((noinline)) void readGameConfig' || exit 1
 } > comp_io.inc

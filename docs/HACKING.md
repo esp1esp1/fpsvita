@@ -140,8 +140,8 @@ inject and autodetect (Vsync), jit (Antilag), lowLatency (Lowlat), softcap (Limi
    each module the game loads.
 3. **Ownership.** At the first display or GXM hook, the helper writes the title id (the
    kernel records its process as owner and clears old numbers), resets the native rate, and
-   sets the limit and latency flags from the title's line or the globals. With `panel=` it
-   then asks for the panel rate.
+   sets the limit and latency flags from the title's line or the globals. With `panel=` (and
+   `experimental=1` in `config.txt`) it then asks for the panel rate.
 4. **Every frame.** Each hook reads the whole state with one copy-out syscall. No helper
    threads, no polling.
 5. **Quick menu and overlay.** The rows write the kernel, so changes are live; Save writes the
@@ -161,7 +161,7 @@ inject and autodetect (Vsync), jit (Antilag), lowLatency (Lowlat), softcap (Limi
 | `fpsvitaSetNativeInterval` | The game's own rate, for the `og:` display |
 | `fpsvitaSetTitleIdPart` | Title id as three words; part 0 sets the owner and clears the numbers |
 | `fpsvitaSetHud` | Overlay mode and corner |
-| `fpsvitaSetAdvanced` | Lowlat, Antilag (full or auto), Tearing flags and the Limiter rate (10 to 120, else off) |
+| `fpsvitaSetAdvanced` | Lowlat, Antilag and Tearing flags and the Limiter rate (10 to 120, else off) |
 | `fpsvitaSetStats` | Overlay numbers; owner only |
 | `fpsvitaSetFrameBufImmediate` | Tearing's immediate flip through the kernel display call; owner only |
 | `fpsvitaSetPanel` | Experimental panel refresh change, owner only; see `kernel/main.c` |
@@ -214,8 +214,10 @@ thread that reads input and submits keeps the queue short. Auto-detect engages a
 mode 0 entry in SceLowio's display timing table with `taiInjectDataForKernel`. The display
 controller re-reads it every frame, so the change is live with no mode switch. The kernel
 applies it only in output mode 0 and only when exactly one table entry matches every known
-word, so a firmware with another layout is left alone (the Slim's LCD uses the same entry and
-is untested). It releases the patch on a new or cleared title id and when the owner exits or
+word, so a firmware with another layout is left alone (the Slim's LCD uses the same entry; two
+user reports had it accept 40 Hz, the actual refresh is unconfirmed). Callers are the owning
+helper at launch and SceShell (`ksceKernelSysrootGetShellPid`) for the FPS row's
+refresh-rate entries while a title is owned. It releases the patch on a new or cleared title id and when the owner exits or
 is killed. A sysevent handler restores the stock timing at the first suspend event and
 re-applies the rate at late resume (`0x100000`): resuming while stretched latched part of the
 display setup, and the shell's layers flickered half-drawn once the game exited. `ksceKernelGetModuleInfo` is resolved
@@ -327,7 +329,8 @@ Each of these is load-bearing. The comments next to the code say more.
   Save refuses to write when `state.txt` does not fit. Rewriting from a partial read with
   `O_TRUNC` destroys profiles.
 - **Save keeps every other line verbatim**, including lines and keys this version does not
-  know. `read=peek` and `panel=` are carried over on this title's line.
+  know. `read=peek` is carried over on this title's line, and so is `panel=` unless
+  `experimental=1` puts it under the FPS row, which then writes it from the rate in force.
 - **Bound every `snprintf` copy.** `snprintf` returns the length it would have written, so
   adding it unchecked to an offset runs past the buffer.
 
@@ -364,7 +367,7 @@ With `log=1` in `config.txt`, it also writes a `helper: rate` line every 3000 pr
 | `ae_period` | Submit-to-submit period |
 | `work`, `work_max` | CPU time per frame, average and recent maximum (the CPU row) |
 | `ctrl_after_pct` | Controller reads within a quarter period after submit; the sleep needs 75 |
-| `jit`, `slack`, `applied`, `missed`, `hurt` | Antilag (0 off, 1 full, 2 auto); current sleep; sleeps done; frames missed while sleeping; back-offs because flips came later |
+| `jit`, `slack`, `applied`, `missed`, `hurt` | Antilag (0 off, 1 on; logs from v0.3.0 and earlier also have 2, fresh poll only); current sleep; sleeps done; frames missed while sleeping; back-offs because flips came later |
 | `softcap`, `softcap_applied` | Limiter rate; frames it held |
 | `ll` | One-frame queue in effect |
 | `ts=min/ema/max`, `ts_n` | Age of the newest sample at each read; number of reads |

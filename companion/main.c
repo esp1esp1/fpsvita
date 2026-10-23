@@ -147,7 +147,7 @@ typedef struct HelperConfig {
 	int     inject;       /* "inject=", "autodetect=": seeded by the lite build only */
 	int     autodetect;
 	int     lowlatency;   /* "lowlatency=1" */
-	int     jit;          /* "antilag=0/1/auto": 2 means fresh poll only */
+	int     jit;          /* "antilag=0/1" ("auto" reads as 1) */
 	int     tear;         /* "tear=1": Uncapped flips IMMEDIATE through the kernel */
 	/* Per-game options on the title's line
 	 * ("TITLEID=2,lowlat=1,antilag=0,limiter=30,tearing=0"), -1 when the
@@ -156,6 +156,7 @@ typedef struct HelperConfig {
 	int     pg_read;      /* per-game "read=peek": blocking Read becomes Peek */
 	int32_t pg_panel;     /* per-game "panel=<hz>" (experimental), 0 none */
 	int     log;          /* "log=1": rate lines in helper.log */
+	int     experimental; /* "experimental=1": per-game panel= applies */
 } HelperConfig;
 
 /* Opt-in latency tweak, read from state.txt at launch (see readGameConfig) */
@@ -474,11 +475,10 @@ static int sceDisplayWaitSetFrameBufCB_patched(void)
  *   - inject: for titles that never wait for vsync, waiting `cur` vblanks
  *     here paces the producer directly instead of stalling the display
  *     thread and leaving the queue full (one frame less latency);
- *   - antilag (opt-in, `antilag=auto` or `1` in state.txt): re-poll a
- *     controller sample that is about to be replaced (freshPoll). `auto`
- *     enables only the fresh poll; `1` also sleeps whole vblanks at 30/20
- *     caps when the budget allows, so the poll lands on a later sample
- *     (jitSleep). Self-retreating: a missed period gates the sleep for 60
+ *   - antilag (`antilag=1`, the default): re-poll a controller sample
+ *     that is about to be replaced (freshPoll), and at 30/20 caps sleep
+ *     whole vblanks when the budget allows, so the poll lands on a later
+ *     sample (jitSleep). Self-retreating: a missed period gates the sleep for 60
  *     frames and the 64-frame warm-up restarts. The sleep is gated on the
  *     controller reads clustering just after AddEntry returns, which is
  *     the only loop shape where a later poll is a fresher poll.
@@ -491,7 +491,6 @@ static int sceDisplayWaitSetFrameBufCB_patched(void)
 #define FPSVITA_CTRL_AFTER_PCT  75
 
 static int s_jitEnabled = 0;    /* antilag=1: fresh poll and the whole-vblank sleep */
-static int s_autoEnabled = 0;   /* antilag=auto: fresh poll only; the sleep stays off */
 static int32_t s_softcap = 0;   /* `softcap=<fps>`: time-based cap used in Uncapped mode */
 static volatile uint32_t s_softcap_applied;
 /* Limiter schedule: the next release time, a period after the previous
@@ -608,7 +607,7 @@ static int32_t noteCtrlSample(const SceCtrlData *pad, int n)
 	return a;
 }
 
-/* Fresh poll (part of antilag auto/full, or exp bit 4): a sample nearly a vblank old means
+/* Fresh poll (part of antilag, or exp bit 4): a sample nearly a vblank old means
  * the next one is about to land (they arrive once per vblank, 0.5 to 1.5 ms
  * after it, and a game that polls right after AddEntry returns loses that
  * race every frame: PCSE00352 read 16.2 ms old samples). Re-poll for up to
@@ -624,7 +623,7 @@ static int peekCall(int readIdx, int port, SceCtrlData *pad, int count);
 static int freshPoll(tai_hook_ref_t ref, int peekIdx, int port, SceCtrlData *pad, int count,
                      int r, int32_t age)
 {
-	if (!(s_jitEnabled || s_autoEnabled)
+	if (!(s_jitEnabled)
 	    || r <= 0 || age < (int32_t)(g_vblank_us - FPSVITA_FRESH_EARLY_US)
 	    || age > (int32_t)(g_vblank_us * 12u / 5u))
 		return r;
@@ -830,7 +829,6 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 	fpsvitaGetState(&st);
 	int32_t cur = st.interval;
 	s_jitEnabled = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
-	s_autoEnabled = (st.adv_flags & FPSVITA_ADV_AUTO) != 0;
 	g_vblank_us = st.panel_hz > 0 ? 1000000u / (uint32_t)st.panel_hz : FPSVITA_VBLANK_US;
 	if (s_softcap != st.softcap)
 		s_lim_next = 0;
@@ -947,11 +945,14 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 		uint32_t tnow = sceKernelGetProcessTimeLow();
 		unsigned i, head = s_entry_head, tail = s_entry_tail;
 		/* Exact tie first: the newest entry whose callback data names this
-		 * framebuffer. Everything older is then discarded (flipped or skipped). */
+		 * framebuffer. Everything older is then discarded (flipped or skipped);
+		 * the tied entry (index i - 1) is the one measured below. Setting the
+		 * tail to i skipped it, so a title tied on every flip (The Swapper)
+		 * never got an INPUT or QUEUE reading. */
 		for (i = head; i != tail && pParam; i--) {
 			unsigned t = (i - 1) % FPSVITA_ENTRY_RING;
 			if (s_entries[t].fb && s_entries[t].fb == pParam->base) {
-				s_entry_tail = i; tail = i; s_entry_tied++; break;
+				s_entry_tail = i - 1; tail = i - 1; s_entry_tied++; break;
 			}
 		}
 		while (tail != head) {
@@ -980,7 +981,6 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 	st.autodetect = FPSVITA_AUTODETECT_ON; st.inject = 0; st.adv_flags = 0; st.softcap = 0;
 	fpsvitaGetState(&st);
 	s_jitEnabled = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
-	s_autoEnabled = (st.adv_flags & FPSVITA_ADV_AUTO) != 0;
 	g_vblank_us = st.panel_hz > 0 ? 1000000u / (uint32_t)st.panel_hz : FPSVITA_VBLANK_US;
 	int32_t cur = st.interval;
 	s_tearWanted = (cur == FPSVITA_INTERVAL_UNCAPPED) && (st.adv_flags & FPSVITA_ADV_TEAR) != 0;
@@ -1028,7 +1028,7 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 				frames, dt ? (unsigned)((600ull * 1000000ull) / dt) : 0, (int)cur,
 				g_inject_active, frames - g_last_vblank_frame, s_ae_period_ema, s_work_ema,
 				s_work_prev_max > s_work_win_max ? s_work_prev_max : s_work_win_max,
-				s_ctrl_after_pct, s_jitEnabled ? 1 : s_autoEnabled ? 2 : 0,
+				s_ctrl_after_pct, s_jitEnabled,
 				s_jit_slack, s_jit_applied, s_jit_missed, s_present_lag_ema, (int)s_softcap, s_softcap_applied,
 				s_lowLatencyApplied || s_lowLatencyNative,
 				s_ts_min, s_ts_ema, s_ts_max, s_ts_n, s_rd_ph_ema, s_ts_ph_ema,
@@ -1143,7 +1143,9 @@ static int lineIsGlobalKey(const char *p, int linelen)
 	    || (linelen > 8  && sceClibStrncmp(p, "limiter=", 8) == 0)
 	    || (linelen > 4  && sceClibStrncmp(p, "hud=",     4) == 0)
 	    || (linelen > 7  && sceClibStrncmp(p, "hudpos=",  7) == 0)
-	    || (linelen > 4  && sceClibStrncmp(p, "log=",     4) == 0);
+	    || (linelen > 4  && sceClibStrncmp(p, "log=",     4) == 0)
+	    || (linelen > 13 && sceClibStrncmp(p, "experimental=", 13) == 0)
+	    || (linelen > 5  && sceClibStrncmp(p, "tips=",    5) == 0);
 }
 
 
@@ -1159,6 +1161,12 @@ static int readFileInto(const char *path, char *buf, int size)
 	return bytes > 0 ? bytes : -1;
 }
 
+
+/* antilag=0 is off; 1, and the "auto" earlier versions wrote, are on. */
+static int antilagValue(const char *v)
+{
+	return *v == 'a' || (int)sceClibStrtoll(v, NULL, 10) ? 1 : 0;
+}
 
 /* One pass over a key=value file. Global keys are taken only when `globals`
  * is set; the title's own line ("TITLEID=interval[,ll=,jit=,sc=]") always. */
@@ -1191,12 +1199,13 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 				else if (linelen > 8 && sceClibStrncmp(p, "limiter=", 8) == 0)
 					cfg->softcap = (int32_t)sceClibStrtoll(p + 8, NULL, 10);
 				else if (linelen > 8 && sceClibStrncmp(p, "antilag=", 8) == 0)
-					cfg->jit = p[8] == 'a' ? 2
-					           : ((int)sceClibStrtoll(p + 8, NULL, 10) ? 1 : 0);
+					cfg->jit = antilagValue(p + 8);
 				else if (linelen > 8 && sceClibStrncmp(p, "tearing=", 8) == 0)
 					cfg->tear = (int)sceClibStrtoll(p + 8, NULL, 10) ? 1 : 0;
 				else if (linelen > 4 && sceClibStrncmp(p, "log=", 4) == 0)
 					cfg->log = (int)sceClibStrtoll(p + 4, NULL, 10) ? 1 : 0;
+				else if (linelen > 13 && sceClibStrncmp(p, "experimental=", 13) == 0)
+					cfg->experimental = (int)sceClibStrtoll(p + 13, NULL, 10) ? 1 : 0;
 			}
 		} else if (linelen > tidlen + 1 && p[tidlen] == '=') {
 			int match = 1;
@@ -1216,8 +1225,7 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 					if (eol - q > 8 && sceClibStrncmp(q, ",lowlat=", 8) == 0)
 						cfg->pg_ll = sceClibStrtoll(q + 8, NULL, 10) ? 1 : 0;
 					else if (eol - q > 9 && sceClibStrncmp(q, ",antilag=", 9) == 0)
-						cfg->pg_jit = q[9] == 'a' ? 2
-						              : (sceClibStrtoll(q + 9, NULL, 10) ? 1 : 0);
+						cfg->pg_jit = antilagValue(q + 9);
 					else if (eol - q > 9 && sceClibStrncmp(q, ",limiter=", 9) == 0)
 						cfg->pg_sc = (int32_t)sceClibStrtoll(q + 9, NULL, 10);
 					else if (eol - q > 9 && sceClibStrncmp(q, ",tearing=", 9) == 0)
@@ -1250,12 +1258,13 @@ static __attribute__((noinline)) void readGameConfig(const char *titleid,
 	cfg->autodetect = 1;
 	cfg->softcap = 0;
 	cfg->lowlatency = 0;
-	cfg->jit = 2;          /* the shell's fresh-install default: auto */
+	cfg->jit = 1;          /* the shell's fresh-install default: on */
 	cfg->tear = 0;
 	cfg->pg_ll = cfg->pg_jit = cfg->pg_sc = cfg->pg_tear = -1;
 	cfg->pg_read = 0;
 	cfg->pg_panel = 0;
 	cfg->log = 0;
+	cfg->experimental = 0;
 
 	/* One buffer size shared with the shell (FPSVITA_STATE_BUF), so the
 	 * writer can never produce a file this reader cannot fully see. Static
@@ -1268,6 +1277,8 @@ static __attribute__((noinline)) void readGameConfig(const char *titleid,
 	n = readFileInto(FPSVITA_STATE_FILE, buf, sizeof(buf));
 	if (n > 0)
 		parseConfigLines(buf, n, titleid, cfg, 0);   /* this title's line */
+	if (!cfg->experimental)
+		cfg->pg_panel = 0;   /* panel refresh is opt-in: experimental=1 */
 }
 
 /* ------------------------------------------------------------------
@@ -1493,16 +1504,14 @@ static void takeKernelOwnership(void)
 		 * the interval. Not the kernel's current values, which after a killed
 		 * title (no module_stop) are still that title's. */
 		s_savedAdvFlags = (s_cfg.lowlatency ? FPSVITA_ADV_LOWLAT : 0)
-		                | (s_cfg.jit == 1 ? FPSVITA_ADV_JIT : 0)
-		                | (s_cfg.jit == 2 ? FPSVITA_ADV_AUTO : 0)
+		                | (s_cfg.jit ? FPSVITA_ADV_JIT : 0)
 		                | (s_cfg.tear ? FPSVITA_ADV_TEAR : 0);
 		s_savedSoftcap = s_cfg.softcap;
 		int jit = s_cfg.pg_jit >= 0 ? s_cfg.pg_jit : s_cfg.jit;
 		int tear = s_cfg.pg_tear >= 0 ? s_cfg.pg_tear : s_cfg.tear;
 		int32_t sc = s_cfg.pg_sc >= 0 ? s_cfg.pg_sc : s_cfg.softcap;
 		fpsvitaSetAdvanced((s_lowLatency ? FPSVITA_ADV_LOWLAT : 0)
-		                   | (jit == 1 ? FPSVITA_ADV_JIT : 0)
-		                   | (jit == 2 ? FPSVITA_ADV_AUTO : 0)
+		                   | (jit ? FPSVITA_ADV_JIT : 0)
 		                   | (tear ? FPSVITA_ADV_TEAR : 0), sc);
 	}
 	if (s_pergame != FPSVITA_NO_PERGAME) {

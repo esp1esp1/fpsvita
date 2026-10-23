@@ -99,6 +99,7 @@ frame. That is the only loop shape where a later read is a fresher read.
 | Title | Input to screen |
 |---|---|
 | Dead or Alive 5 Plus (60), menu | 38 ms with Antilag, 20 ms with Antilag and Lowlat |
+| Dead or Alive 5 Plus (60), gameplay | 33 ms with neither, 21 ms with Antilag and Lowlat |
 | Metal Gear Solid 2 HD (60), menu | 26 ms with or without Lowlat |
 | The Wolf Among Us (30) | 11 ms with Antilag, 8 ms with both; within the noise |
 
@@ -107,7 +108,8 @@ sample at the next flip instead of at that frame's own flip. It understates a tw
 by up to a frame, so these two rows compare with each other but not with other INPUT figures.
 
 A two-deep queue is a frame of latency kept as insurance against slow frames. Lowlat gives
-that frame back where frames actually wait in the queue (Dead or Alive 5 Plus gained 18 ms)
+that frame back where frames actually wait in the queue (Dead or Alive 5 Plus gained 18 ms in
+its menu and about 12 ms in gameplay, where Antilag alone gives 2)
 and does little where they do not. The queue depth is fixed when the game starts its
 graphics, so Lowlat applies at the next launch. Doom64EX starts its graphics outside the call
 fpsvita hooks, so Lowlat cannot apply there.
@@ -170,6 +172,14 @@ refresh: a blocking read returned 60.3 samples a second at 60 Hz and 40.1 at 40 
 - **Doom64EX, by eye**: at 37 to 38 fps on a 40 Hz panel its frames alternated between one
   and two refreshes, and it looked choppier than a steady 30. A panel rate the game cannot
   hold is worse than none.
+
+- **Slim (PCH-2000), two user reports**: Minecraft: PlayStation Vita Edition and Dragon Quest
+  Builders at `panel=40` with a 60 limit, firmware 3.65. The kernel granted 40 Hz in both,
+  with no artefacts and the games at normal speed. Both ran under 40 fps most of the time
+  (Minecraft 34 to 39, Dragon Quest Builders 19 to 39), so 40 Hz made them play worse.
+  Whether the Slim's screen itself refreshed at 40 Hz is not confirmed: one Minecraft sample
+  at the 60 limit read 57 frames a second, which a 40 Hz screen cannot show. The reports'
+  input figures predate a measurement fix (v0.3.1) for these two games and are not used.
 
 So panel refresh is for games that cannot hold 60 but beat 30 and keep their own time; it
 trades latency for even frame pacing.

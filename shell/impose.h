@@ -60,7 +60,17 @@ private:
 	void SavePerGame();
 	void ReadTitleId();
 
-	int32_t FindCycleIndex(int32_t interval);
+	void BuildModes();
+
+	/* One FPS row entry (see BuildModes). */
+	struct ModeEntry {
+		int32_t interval;
+		bool tear;       /* Uncapped with every flip IMMEDIATE */
+		int32_t panel;   /* refresh rate in Hz, 0 stock */
+	};
+	ModeEntry modes[FPSVITA_CYCLE_LEN + 1 + 3];   /* + Tearing + fpsvita_panel_rates */
+	int32_t modeCount;
+	int32_t modeIdx;
 
 	paf::Plugin *plugin;
 	paf::Plugin *imposePlugin;
@@ -83,6 +93,7 @@ private:
 	int32_t nativeInterval;
 	int32_t advFlags;     /* FPSVITA_ADV_* for the title on screen (or the globals) */
 	int32_t softcap;
+	int32_t currentPanel;   /* refresh rate in force for the title (kernel panel_hz), 0 stock */
 	char titleid[FPSVITA_TITLEID_LEN];
 	bool hasGame;
 	bool readPeek;     /* the title's state.txt line has read=peek */

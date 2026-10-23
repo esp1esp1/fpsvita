@@ -4,24 +4,30 @@ fpsvita is a set of taiHEN plugins for the PS Vita that lowers input latency, sh
 game's frames and input are doing, and sets frame-rate limits. You control it from the
 quick menu while a game runs, and it keeps a profile per game.
 
-![The Full overlay over a game](docs/images/overlay.jpg)
+| Lowlat and Antilag off | Lowlat and Antilag on |
+|---|---|
+| ![Dead or Alive 5 Plus with Lowlat and Antilag off: INPUT 32.7 ms](docs/images/doa5-off.jpg) | ![Dead or Alive 5 Plus with Lowlat and Antilag on: INPUT 21.0 ms](docs/images/doa5-lowlat.jpg) |
 
-*The Full overlay. The current build also shows TIP and LAST rows below LIMITER.*
+*Dead or Alive 5 Plus at its own 60 fps, Full overlay. INPUT drops from 33 to 21 ms and the
+frame rate stays at 60. Nearly all of it is Lowlat: at a game's own 60, Antilag only hands it
+a fresher sample. The TIP row suggested Lowlat in the first shot.*
 
 ## What it does
 
 - **Antilag**: hands the game a newer controller sample so a button press reaches the screen
-  sooner, without changing the game's frame rate. On by default in its automatic form; the
-  full form also moves the game's input read later at a 30 or 20 limit.
+  sooner, without changing the game's frame rate. On by default; at a 30 or 20 limit it also
+  moves the game's input read later.
 - **Overlay**: frame rate, CPU time, input age (INPUT) and queue time over the game, plus a
-  TIP row with advice and a LAST row with before/after numbers for your last change.
+  TIP row with advice (`tips=0` turns it off) and a LAST row with before/after numbers for
+  your last change.
 - **Lowlat, Limiter, Tearing**: a shorter display queue, a time-based limit for rates such as
   40 or 45, and immediate flips.
 - **Frame limits**: 60, 30, 20 fps or uncapped, plus a Vsync wait for games that never wait.
 - **Per-game profiles**: Save stores a game's settings, which load at its next launch.
 - **Panel refresh (experimental)**: runs the screen at a lower rate such as 40 or 45 Hz for
-  one game, so a game that cannot hold 60 gets evenly paced frames. Tested on the OLED model;
-  Slim reports welcome.
+  one game, so a game that cannot hold 60 gets evenly paced frames. Turn it on with
+  `experimental=1`, then pick 50Hz, 45Hz or 40Hz on the FPS row. Tested on the OLED model; the
+  Slim accepted 40 Hz in two reports.
 - **Lite mode**: one plugin and two text files, without the quick menu or overlay.
 
 Seven titles have measured before/after numbers in
@@ -35,6 +41,14 @@ below it they run in slow motion. Nothing outside the game can fix that. `Defaul
 game's pacing alone and is always safe. Check the
 [compatibility list](docs/compatibility-list.md) before you pick a limit, and see
 [why some games break](docs/GUIDE.md#why-some-games-break-at-another-frame-rate).
+
+| Default | 30 limit |
+|---|---|
+| ![The Swapper at Default: an uneven 37 fps](docs/images/swapper-default.jpg) | ![The Swapper at a 30 limit: a steady 30 fps](docs/images/swapper-30.jpg) |
+
+*The Swapper keeps its own time, so a limit is safe. At Default it runs an uneven 37 fps; at
+the 30 limit it holds a steady 30 and INPUT drops from 40 to 36 ms. LAST shows the trade:
+6 ms less input lag for 6 fps fewer.*
 
 ## Install
 
@@ -109,10 +123,10 @@ are kept.
 2. Hold the PS button. On the `HUD:` row, press `>` until it reads `Full`. Close the menu.
 3. Play for a few seconds. The `INPUT:` row shows how old your input is when a frame
    reaches the screen, for example `38.2 ms`.
-4. Open the quick menu and untick `Antilag`. It starts ticked, in its automatic form.
-   Play on. After about 3 seconds LAST reads something like `ANTI-LAG 31>38 MS`: INPUT
-   before and after the change, in milliseconds.
-5. Tick `Antilag` again. This turns on full Antilag. LAST shows the new before/after pair.
+4. Open the quick menu and untick `Antilag` (it starts ticked). Play on. After about 3
+   seconds LAST reads something like `ANTI-LAG 31>38 MS`: INPUT before and after the change,
+   in milliseconds.
+5. Tick `Antilag` again. LAST shows the new before/after pair.
 6. Press `Save` to keep this game's settings.
 
 Next, read the [user guide](docs/GUIDE.md) for every option and what the overlay's rows

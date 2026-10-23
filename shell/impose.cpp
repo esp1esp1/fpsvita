@@ -27,6 +27,8 @@
 
 using namespace paf;
 
+static_assert(FPSVITA_PANEL_RATES_LEN == 3, "Impose::modes is sized for three refresh rates");
+
 namespace fpsvita {
 
 /* ------------------------------------------------------------------
@@ -49,8 +51,40 @@ static const wchar_t *getModeString(int32_t interval, bool tear)
 	}
 }
 
-/* The FPS row cycles the interval table plus one Tearing entry at the end. */
-#define FPSVITA_UI_CYCLE_LEN ((int32_t)FPSVITA_CYCLE_LEN + 1)
+/* The FPS row: the interval table with Tearing after Uncapped and, with a
+ * game running and `experimental=1`, the refresh rates after 60fps (a 60fps
+ * limit at that refresh: one frame per refresh). */
+void Impose::BuildModes()
+{
+	modeCount = 0;
+	for (uint32_t i = 0; i < FPSVITA_CYCLE_LEN; i++) {
+		ModeEntry m = { fpsvita_cycle[i], false, 0 };
+		modes[modeCount++] = m;
+		if (fpsvita_cycle[i] == FPSVITA_INTERVAL_60FPS && hasGame && fpsvitaPanelUi()) {
+			for (int32_t r = 0; r < FPSVITA_PANEL_RATES_LEN; r++) {
+				ModeEntry p = { FPSVITA_INTERVAL_60FPS, false, fpsvita_panel_rates[r] };
+				modes[modeCount++] = p;
+			}
+		}
+	}
+	ModeEntry tear = { FPSVITA_INTERVAL_UNCAPPED, true, 0 };
+	modes[modeCount++] = tear;
+
+	/* The entry for what is in force; a combination with no entry of its own
+	 * (a hand-edited panel= at another limit) shows as its plain limit. */
+	bool t = currentInterval == FPSVITA_INTERVAL_UNCAPPED && (advFlags & FPSVITA_ADV_TEAR);
+	int32_t panel = currentInterval == FPSVITA_INTERVAL_60FPS ? currentPanel : 0;
+	modeIdx = -1;
+	for (int32_t pass = 0; pass < 2 && modeIdx < 0; pass++)
+		for (int32_t i = 0; i < modeCount; i++)
+			if (modes[i].interval == currentInterval && modes[i].tear == t
+			    && (pass || modes[i].panel == panel)) {
+				modeIdx = i;
+				break;
+			}
+	if (modeIdx < 0)
+		modeIdx = 0;
+}
 
 /* ------------------------------------------------------------------
  * Read titleid from kernel module (3 x uint32_t parts → string)
@@ -74,27 +108,15 @@ void Impose::ReadTitleId()
 }
 
 /* ------------------------------------------------------------------
- * Cycle navigation
- * ------------------------------------------------------------------ */
-
-int32_t Impose::FindCycleIndex(int32_t interval)
-{
-	for (uint32_t i = 0; i < FPSVITA_CYCLE_LEN; i++) {
-		if (fpsvita_cycle[i] == interval)
-			return (int32_t)i;
-	}
-	return 0;
-}
-
-/* ------------------------------------------------------------------
  * State file I/O
  *
  * config.txt holds the globals and is regenerated whole by the shell:
  *   limit=<n>       -1 Default, 1 60fps, 2 30fps, 3 20fps, 0 Uncapped
  *   vsync=auto|0|1  forced vsync wait (auto = detected)
- *   hud=, hudpos=, lowlat=, antilag=, limiter=<fps>, tearing=, log=
+ *   hud=, hudpos=, lowlat=, antilag=, limiter=<fps>, tearing=, log=,
+ *   experimental=, tips=
  * state.txt holds one "TITLEID=<limit>,lowlat=,antilag=,limiter=,tearing="
- * line per title. SavePerGame replaces or appends this title's line and
+ * line per title (plus ",panel=<hz>" and ",read=peek" where set). SavePerGame replaces or appends this title's line and
  * keeps every other line verbatim, so a line this version does not know
  * about survives a rewrite. It refuses to write a file it could not read
  * whole: rewriting from a partial read with O_TRUNC once truncated a file
@@ -141,20 +163,18 @@ static bool writeWhole(const char *path, const char *data, int len)
 /* config.txt: the globals, regenerated whole. Nothing to preserve. */
 static void writeConfigFile(int32_t interval, int32_t inject, int32_t autodetect)
 {
-	char buf[192], vsync[8], antilag[8];
+	char buf[224], vsync[8];
 	if (autodetect)
 		sce_paf_snprintf(vsync, sizeof(vsync), "auto");
 	else
 		sce_paf_snprintf(vsync, sizeof(vsync), "%d", (int)inject);
-	if (g_jit == 2)
-		sce_paf_snprintf(antilag, sizeof(antilag), "auto");
-	else
-		sce_paf_snprintf(antilag, sizeof(antilag), "%d", (int)g_jit);
 	int len = sce_paf_snprintf(buf, sizeof(buf),
 	                            "limit=%d\nvsync=%s\nhud=%d\nhudpos=%d\n"
-	                            "lowlat=%d\nantilag=%s\nlimiter=%d\ntearing=%d\nlog=%d\n",
+	                            "lowlat=%d\nantilag=%d\nlimiter=%d\ntearing=%d\nlog=%d\n"
+	                            "experimental=%d\ntips=%d\n",
 	                            interval, vsync, g_hudMode, g_hudPos,
-	                            g_lowLatency, antilag, g_softcap, g_tear, g_rateLog);
+	                            g_lowLatency, g_jit ? 1 : 0, g_softcap, g_tear, g_rateLog,
+	                            g_experimental, g_tips);
 	if (len > 0 && len < (int)sizeof(buf))
 		writeWhole(FPSVITA_CONFIG_FILE, buf, len);
 }
@@ -173,10 +193,9 @@ static bool appendPerGameLine(char *out, int *outpos, int outsize,
                                int32_t advFlags, int32_t softcap, const char *extra)
 {
 	char line[96];
-	const char *antilag = (advFlags & FPSVITA_ADV_JIT) ? "1"
-	                    : (advFlags & FPSVITA_ADV_AUTO) ? "auto" : "0";
+	int antilag = (advFlags & FPSVITA_ADV_JIT) ? 1 : 0;
 	int n = sce_paf_snprintf(line, sizeof(line),
-	                         "%s=%d,lowlat=%d,antilag=%s,limiter=%d,tearing=%d%s\n",
+	                         "%s=%d,lowlat=%d,antilag=%d,limiter=%d,tearing=%d%s\n",
 	                         titleid, interval,
 	                         (advFlags & FPSVITA_ADV_LOWLAT) ? 1 : 0,
 	                         antilag, softcap,
@@ -201,9 +220,10 @@ void Impose::PersistState()
 	writeConfigFile(g_globalInterval, currentInject, autodetect);
 }
 
-/* Per-game keys with no quick-menu UI (",read=peek", ",panel=<hz>"): carried
- * over verbatim when the user saves the other options. */
-static void lineExtraKeys(const char *p, int len, char *out, int outsize)
+/* Per-game keys with no quick-menu UI (",read=peek", and ",panel=<hz>" unless
+ * the FPS row owns it): carried over verbatim when the user saves the other
+ * options. */
+static void lineExtraKeys(const char *p, int len, char *out, int outsize, bool keepPanel)
 {
 	int o = 0;
 	out[0] = '\0';
@@ -215,6 +235,10 @@ static void lineExtraKeys(const char *p, int len, char *out, int outsize)
 			take = 7;
 			while (i + take < len && p[i + take] >= '0' && p[i + take] <= '9')
 				take++;
+			if (!keepPanel) {
+				i += take - 1;
+				continue;
+			}
 		}
 		if (take && o + take < outsize) {
 			sce_paf_memcpy(out + o, p + i, take);
@@ -276,6 +300,13 @@ void Impose::SavePerGame()
 	int outpos = 0;
 	bool found = false;
 	char extra[32];
+	/* With the refresh-rate entries on, the FPS row owns panel=: written from
+	 * the rate in force, not carried over. */
+	bool ownPanel = fpsvitaPanelUi();
+	char panelKey[16];
+	panelKey[0] = '\0';
+	if (ownPanel && currentPanel > 0)
+		sce_paf_snprintf(panelKey, sizeof(panelKey), ",panel=%d", (int)currentPanel);
 
 	char *p = s_readBuf;
 	while (*p && p < s_readBuf + bytes) {
@@ -295,7 +326,9 @@ void Impose::SavePerGame()
 		}
 
 		if (match) {
-			lineExtraKeys(p, linelen, extra, sizeof(extra));
+			lineExtraKeys(p, linelen, extra, sizeof(extra), !ownPanel);
+			int elen = (int)sce_paf_strlen(extra);
+			sce_paf_snprintf(extra + elen, sizeof(extra) - elen, "%s", panelKey);
 			if (!appendPerGameLine(s_rebuilt, &outpos, sizeof(s_rebuilt),
 			                        titleid, currentInterval, advFlags, softcap,
 			                        extra))
@@ -315,7 +348,7 @@ void Impose::SavePerGame()
 
 	if (!found && !appendPerGameLine(s_rebuilt, &outpos, sizeof(s_rebuilt),
 	                                  titleid, currentInterval, advFlags, softcap,
-	                                  ""))
+	                                  panelKey))
 		return;
 
 	writeWhole(FPSVITA_STATE_FILE, s_rebuilt, outpos);
@@ -360,13 +393,17 @@ bool readGlobals(int32_t *interval, int32_t *inject, int32_t *autodetect,
 			else if (klen == 6 && sce_paf_strncmp(p, "lowlat", 6) == 0)
 				g_lowLatency = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 			else if (klen == 7 && sce_paf_strncmp(p, "antilag", 7) == 0)
-				g_jit = (*val == 'a') ? 2 : (sce_paf_strtol(val, NULL, 10) ? 1 : 0);
+				g_jit = (*val == 'a' || sce_paf_strtol(val, NULL, 10)) ? 1 : 0;   /* earlier "auto" is on */
 			else if (klen == 7 && sce_paf_strncmp(p, "limiter", 7) == 0)
 				g_softcap = (int32_t)sce_paf_strtol(val, NULL, 10);
 			else if (klen == 7 && sce_paf_strncmp(p, "tearing", 7) == 0)
 				g_tear = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 			else if (klen == 3 && sce_paf_strncmp(p, "log", 3) == 0)
 				g_rateLog = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
+			else if (klen == 12 && sce_paf_strncmp(p, "experimental", 12) == 0)
+				g_experimental = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
+			else if (klen == 4 && sce_paf_strncmp(p, "tips", 4) == 0)
+				g_tips = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 		}
 		if (*eol != '\n') break;
 		p = eol + 1;
@@ -393,15 +430,21 @@ void Impose::UpdateModeLabel()
 		return;
 
 	bool tear = (advFlags & FPSVITA_ADV_TEAR) != 0;
+	const ModeEntry &m = modes[modeIdx];
+	wchar_t mode[16];
+	/* "40Hz (og:60)": with "fps @" as well it ran into the arrow. */
+	if (m.panel > 0 && currentPanel == m.panel)
+		sce_paf_swprintf(mode, 16, L"%dHz", (int)m.panel);
+	else if (m.panel > 0)   /* the kernel refused: not this screen */
+		sce_paf_swprintf(mode, 16, L"%dHz n/a", (int)m.panel);
+	else
+		sce_paf_swprintf(mode, 16, L"%ls", getModeString(currentInterval, tear));
 	if (nfps > 0) {
 		/* With the rate the game asked for itself: "30fps (og:60)" */
-		sce_paf_swprintf(buf, sizeof(buf) / sizeof(wchar_t),
-		                  L"%ls (og:%d)", getModeString(currentInterval, tear),
-		                  nfps);
+		sce_paf_swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%ls (og:%d)", mode, nfps);
 	} else {
 		/* No native detected yet */
-		sce_paf_swprintf(buf, sizeof(buf) / sizeof(wchar_t),
-		                  L"%ls", getModeString(currentInterval, tear));
+		sce_paf_swprintf(buf, sizeof(buf) / sizeof(wchar_t), L"%ls", mode);
 	}
 
 	paf::wstring wstr(buf);
@@ -415,7 +458,7 @@ void Impose::UpdateWarning()
 {
 	if (!warnText)
 		return;
-	bool show = hasGame
+	bool show = hasGame && g_tips
 	         && fpsvitaCompatWarn(fpsvitaCompatFlags(titleid), currentInterval, nativeInterval,
 	                             readPeek) != NULL;
 	if (show)
@@ -472,18 +515,21 @@ void Impose::ModeUpCBFun(int32_t type, ui::Handler *self,
 void Impose::CycleMode(int32_t dir)
 {
 	Impose *obj = this;
-	int32_t idx = obj->FindCycleIndex(obj->currentInterval);
-	if (obj->currentInterval == FPSVITA_INTERVAL_UNCAPPED && (obj->advFlags & FPSVITA_ADV_TEAR))
-		idx = FPSVITA_UI_CYCLE_LEN - 1;
-
-	if (dir < 0)
-		idx = (idx == 0) ? FPSVITA_UI_CYCLE_LEN - 1 : idx - 1;
-	else
-		idx = (idx + 1) % FPSVITA_UI_CYCLE_LEN;
-
-	bool tear = idx == FPSVITA_UI_CYCLE_LEN - 1;
-	obj->currentInterval = tear ? FPSVITA_INTERVAL_UNCAPPED : fpsvita_cycle[idx];
+	obj->modeIdx = (obj->modeIdx + obj->modeCount + dir) % obj->modeCount;
+	const ModeEntry &m = obj->modes[obj->modeIdx];
+	bool tear = m.tear;
+	obj->currentInterval = m.interval;
 	fpsvitaSetInterval(obj->currentInterval);
+
+	/* Live: the kernel patches the panel timing at once and puts the stock
+	 * timing back when the title exits. What it granted is what is shown. */
+	if (obj->hasGame && fpsvitaPanelUi() && m.panel != obj->currentPanel) {
+		FpsvitaState st;
+		fpsvitaSetPanel(m.panel);
+		st.panel_hz = 0;
+		fpsvitaGetState(&st);
+		obj->currentPanel = st.panel_hz;
+	}
 
 	/*
 	 * With a game running this is that game's active interval; the player
@@ -565,13 +611,7 @@ void Impose::LowlatCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *us
 void Impose::JitCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *userdata)
 {
 	Impose *obj = (Impose *)userdata;
-	/* The box is checked for both Auto and full Antilag. The first click
-	 * turns either off; the next turns full Antilag on. Auto is the
-	 * fresh-install default and is restored by editing config.txt. */
-	bool on = (obj->advFlags & (FPSVITA_ADV_JIT | FPSVITA_ADV_AUTO)) != 0;
-	obj->advFlags &= ~(FPSVITA_ADV_JIT | FPSVITA_ADV_AUTO);
-	if (!on)
-		obj->advFlags |= FPSVITA_ADV_JIT;
+	obj->advFlags ^= FPSVITA_ADV_JIT;
 	obj->ApplyAdvanced();
 }
 
@@ -594,8 +634,7 @@ void Impose::ApplyAdvanced()
 	fpsvitaSetAdvanced(advFlags, softcap);
 	if (!hasGame) {
 		g_lowLatency = (advFlags & FPSVITA_ADV_LOWLAT) ? 1 : 0;
-		g_jit = (advFlags & FPSVITA_ADV_JIT) ? 1
-		      : (advFlags & FPSVITA_ADV_AUTO) ? 2 : 0;
+		g_jit = (advFlags & FPSVITA_ADV_JIT) ? 1 : 0;
 		g_tear = (advFlags & FPSVITA_ADV_TEAR) ? 1 : 0;
 		g_softcap = softcap;
 		PersistState();
@@ -673,6 +712,9 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	this->advFlags = 0;
 	this->softcap = 0;
 	this->readPeek = false;
+	this->currentPanel = 0;
+	this->modeCount = 0;
+	this->modeIdx = 0;
 	this->valid = false;
 	this->registered = false;
 
@@ -704,10 +746,11 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	if (hasGame) {
 		/* What the helper put in force for this title. */
 		FpsvitaState st;
-		st.adv_flags = 0; st.softcap = 0;
+		st.adv_flags = 0; st.softcap = 0; st.panel_hz = 0;
 		fpsvitaGetState(&st);
 		this->advFlags = st.adv_flags;
 		this->softcap = st.softcap;
+		this->currentPanel = st.panel_hz;
 	} else {
 		this->advFlags = (g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | fpsvitaJitFlags(g_jit)
 		               | (g_tear ? FPSVITA_ADV_TEAR : 0);
@@ -787,6 +830,8 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 		return;
 	}
 
+	BuildModes();
+
 	/* Set initial display state */
 	if (warnText) {
 		wchar_t wbuf[] = L"(!)";
@@ -799,7 +844,7 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	UpdateInjectState();
 	UpdateHudLabels();
 	llBox->SetCheck((advFlags & FPSVITA_ADV_LOWLAT) != 0);
-	jitBox->SetCheck((advFlags & (FPSVITA_ADV_JIT | FPSVITA_ADV_AUTO)) != 0);
+	jitBox->SetCheck((advFlags & FPSVITA_ADV_JIT) != 0);
 	UpdateSoftcapLabel();
 
 	/* Show save button only when a game is running */

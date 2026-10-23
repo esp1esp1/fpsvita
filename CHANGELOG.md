@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.3.1 (2026-10-24)
+
+### Added
+
+- `experimental=1` in `config.txt` turns on panel refresh from the quick menu: with a game
+  running, the FPS row gains `50Hz`, `45Hz` and `40Hz` after `60fps` (a 60fps limit at that
+  refresh), applied at once and saved per game as `panel=`. At a 60fps limit the overlay's
+  NOT HELD tip suggests a refresh rate the game runs 15% above (`NOT HELD, TRY 45HZ`), except
+  for games the compatibility list marks speed-tied. The entries are not offered on a PS TV.
+- `tips=0` in `config.txt` turns tips off: no TIP row on the overlay and no `(!)` in the
+  quick menu.
+
+### Changed
+
+- Panel refresh is now opt-in: without `experimental=1` a hand-written `panel=` is ignored.
+  If you added one since v0.2.1, add `experimental=1` to `config.txt` and reboot.
+- The Slim (PCH-2000) accepted 40 Hz in two user reports with no flicker; whether its screen
+  refreshes at 40 Hz is not confirmed yet.
+- README screenshots retaken on the current overlay: Dead or Alive 5 Plus with Lowlat and
+  Antilag off and on, and The Swapper at Default and at a 30 limit.
+- Antilag is now simply on or off, and on by default. On is the fresh poll plus the
+  whole-vblank sleep, which only runs at a 30 or 20 limit and backs off by itself after a
+  missed frame. The separate `auto` mode (fresh poll only) is gone: it was a third state
+  hidden behind one checkbox. An `antilag=auto` in `config.txt` or on a game's line reads as
+  on; the menu and Save now write `0` or `1`.
+- Overlay: Mini shows `AL` when Antilag is on; the ANTI-LAG row reads `OFF`, `ON / n` or the
+  sleep in force; the tip is `TRY ANTI-LAG` and only shows while Antilag is off.
+
+### Fixed
+
+- The overlay's INPUT read `-` and QUEUE stayed stale on games whose flips name their
+  framebuffer (The Swapper, Minecraft, Dragon Quest Builders): the matched frame was skipped
+  instead of measured. The `log=1` rate lines had the same fault (`fscan`, `flag`).
+
 ## v0.3.0 (2026-10-23)
 
 ### Added

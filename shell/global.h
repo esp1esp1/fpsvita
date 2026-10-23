@@ -21,8 +21,7 @@ extern int32_t g_hudMode;
 extern int32_t g_hudPos;
 
 /* Global latency defaults (`lowlat=`, `antilag=`, `limiter=`). A per-game
- * line overrides them. g_jit: 0 off, 1 full Antilag, 2 auto (fresh poll
- * only; the whole-vblank sleep stays off). */
+ * line overrides them. g_jit: 0 off, 1 Antilag on. */
 extern int32_t g_lowLatency;
 extern int32_t g_jit;
 extern int32_t g_softcap;
@@ -31,6 +30,19 @@ extern int32_t g_tear;
 /* `log=1`: the helper writes rate lines to helper.log. No menu row; the
  * shell only carries it through its config.txt rewrites. */
 extern int32_t g_rateLog;
+
+/* `experimental=1`: the FPS row's refresh-rate entries and the overlay's
+ * refresh-rate tip (the helper also ignores per-game `panel=` without it).
+ * `tips=0`: no overlay TIP row and no quick-menu (!). Neither has a menu row. */
+extern int32_t g_experimental;
+extern int32_t g_tips;
+
+/* The FPS row's refresh-rate entries: one frame per refresh at each. */
+static const int32_t fpsvita_panel_rates[] = {50, 45, 40};
+#define FPSVITA_PANEL_RATES_LEN ((int32_t)(sizeof(fpsvita_panel_rates) / sizeof(fpsvita_panel_rates[0])))
+
+/* Refresh-rate UI: opted in, and a screen to drive (a PS TV has none). */
+bool fpsvitaPanelUi(void);
 
 /* Called by ~Impose so the shell re-arms for the next quick menu open.
  * Defined in main.cpp, which owns the open/closed flag. */
@@ -76,10 +88,10 @@ static inline void textSet(paf::ui::Text *t, const wchar_t *s)
 	fpsvita_textSetString(t, w, 0);
 }
 
-/* g_jit (0 off, 1 full, 2 auto) -> the kernel advanced flag. */
+/* g_jit (0 off, 1 on) -> the kernel advanced flag. */
 static inline int32_t fpsvitaJitFlags(int32_t v)
 {
-	return v == 1 ? FPSVITA_ADV_JIT : v == 2 ? FPSVITA_ADV_AUTO : 0;
+	return v ? FPSVITA_ADV_JIT : 0;
 }
 
 /* Index of a softcap value in fpsvita_softcap_cycle, 0 (off) if not listed. */

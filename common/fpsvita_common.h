@@ -127,7 +127,6 @@ extern "C" {
 #define FPSVITA_ADV_LOWLAT (1 << 0)
 #define FPSVITA_ADV_JIT    (1 << 1)   /* anti-lag: fresh poll and the whole-vblank sleep */
 #define FPSVITA_ADV_TEAR   (1 << 2)   /* Uncapped only: every flip IMMEDIATE through the kernel */
-#define FPSVITA_ADV_AUTO   (1 << 3)   /* anti-lag auto: fresh poll only; the sleep stays off */
 #define FPSVITA_SOFTCAP_MIN (10)
 #define FPSVITA_SOFTCAP_MAX (120)
 static const int32_t fpsvita_softcap_cycle[] = {0, 20, 24, 25, 30, 40, 45, 50, 60};
@@ -195,7 +194,7 @@ FPSVITA_API void fpsvitaSetHud(int32_t mode, int32_t pos);
 FPSVITA_API void fpsvitaSetAdvanced(int32_t flags, int32_t softcap);
 FPSVITA_API void fpsvitaSetStats(const FpsvitaStats *in);  /* copy-in from user memory */
 FPSVITA_API int  fpsvitaSetFrameBufImmediate(const void *fb); /* experiment: kernel IMMEDIATE flip */
-FPSVITA_API void fpsvitaSetPanel(int32_t hz);   /* owner only; 0 = stock refresh */
+FPSVITA_API void fpsvitaSetPanel(int32_t hz);   /* owner or the shell, while a title runs; 0 = stock */
 
 static inline int32_t fpsvitaGetInterval(void)
 { FpsvitaState s; s.interval = FPSVITA_INTERVAL_OFF; fpsvitaGetState(&s); return s.interval; }

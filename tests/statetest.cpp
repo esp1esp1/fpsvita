@@ -37,6 +37,7 @@ static void sceIoMkdir(const char *p, int) { char c[256]; snprintf(c,sizeof c,"m
 #define sce_paf_memcpy   memcpy
 #define sce_paf_strncmp  strncmp
 #define sce_paf_strtol   strtol
+#define sce_paf_strlen   strlen
 #define sceClibMemset    memset
 #define sceClibStrncmp   strncmp
 #define sceClibStrtoll   strtoll
@@ -48,15 +49,16 @@ static int sce_paf_snprintf(char *b, size_t n, const char *f, ...) {
 static int32_t g_globalInterval = -1;
 static int32_t g_hudMode = 0, g_hudPos = 0;
 static int32_t g_lowLatency = 0, g_jit = 0, g_softcap = 0, g_tear = 0, g_advShown = 0, g_rateLog = 0;
+static int32_t g_experimental = 0, g_tips = 1;
+static bool fpsvitaPanelUi(void) { return g_experimental != 0; }
 #define FPSVITA_ADV_LOWLAT (1 << 0)
 #define FPSVITA_ADV_JIT    (1 << 1)
 #define FPSVITA_ADV_TEAR   (1 << 2)
-#define FPSVITA_ADV_AUTO   (1 << 3)
 
 /* Minimal stand-in for the real class: same member names/types. */
 struct Impose {
     int32_t currentInterval, currentInject, autodetect;
-    int32_t advFlags, softcap;
+    int32_t advFlags, softcap, currentPanel;
     char titleid[FPSVITA_TITLEID_LEN];
     bool hasGame;
     void PersistState();
@@ -67,7 +69,7 @@ struct Impose {
 
 /* companion side */
 namespace comp {
-typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int pg_read; int32_t pg_panel; int log; } HelperConfig;
+typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int pg_read; int32_t pg_panel; int log; int experimental; } HelperConfig;
 #include "comp_io.inc"
 }
 
@@ -156,7 +158,7 @@ int main(){
     expect("lowlat read = 1", c.lowlatency==1);
     expect("global limit read = 2", c.interval==2);
     expect("vsync=auto -> autodetect, no forced vsync", c.autodetect==1 && c.inject==0);
-    expect("antilag absent -> auto, limiter absent -> 0", c.jit==2 && c.softcap==0);
+    expect("antilag absent -> on, limiter absent -> 0", c.jit==1 && c.softcap==0);
     expect("other override read = 1", RGC("PCSE00411")==1);
     expect("absent title -> NO_PERGAME", RGC("PCSZ99999")==-99);
     expect("global key not seen as a titleid", RGC("limit")==-99);
@@ -176,7 +178,21 @@ int main(){
     put("PCSE00411=1,read=peek,panel=40\n");
     { Impose o=mk("PCSE00411",1,0,1); o.SavePerGame(); }
     expect("Save keeps read=peek and panel=", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek,panel=40\n")!=NULL);
-    expect("helper reads panel=", RGC("PCSE00411")==1 && c.pg_panel==40 && c.pg_read==1);
+    expect("panel= ignored without experimental=1", RGC("PCSE00411")==1 && c.pg_panel==0 && c.pg_read==1);
+    putcfg("experimental=1\n");
+    expect("helper reads panel= with experimental=1", RGC("PCSE00411")==1 && c.pg_panel==40 && c.pg_read==1);
+    expect("experimental= is a global, not a title", c.pergame==1);
+    /* experimental=1: the FPS row owns panel=, written from the rate in force */
+    g_experimental = 1;
+    { Impose o=mk("PCSE00411",1,0,1); o.currentPanel=45; o.SavePerGame(); }
+    expect("Save writes the rate in force", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek,panel=45\n")!=NULL
+                                            && count(get(),"panel=")==1);
+    { Impose o=mk("PCSE00411",1,0,1); o.currentPanel=0; o.SavePerGame(); }
+    expect("stock refresh drops panel=", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek\n")!=NULL);
+    { Impose o=mk("PCSA00009",1,0,1); o.currentPanel=40; o.SavePerGame(); }
+    expect("a new line gets panel=", strstr(get(),"PCSA00009=1,lowlat=0,antilag=0,limiter=0,tearing=0,panel=40\n")!=NULL);
+    g_experimental = 0;
+    putcfg("");
     put("PCSE00411=1\n");
     expect("no panel= -> 0", RGC("PCSE00411")==1 && c.pg_panel==0);
     put("PCSB00069=3\nPCSE00411=1,read=peek\n");
@@ -186,19 +202,19 @@ int main(){
     expect("Save writes the options", strstr(get(),"PCSE00411=1,lowlat=0,antilag=1,limiter=30,tearing=1,read=peek\n")!=NULL);
     expect("and the helper reads them back", RGC("PCSE00411")==1 && c.pg_ll==0 && c.pg_jit==1 && c.pg_sc==30 && c.pg_tear==1 && c.pg_read==1);
     putcfg("antilag=auto\n");
-    expect("antilag=auto read as 2", RGC("PCSE00411")==1 && c.jit==2);
+    expect("earlier antilag=auto reads as on", RGC("PCSE00411")==1 && c.jit==1);
     put("PCSE00411=1,antilag=auto\n");
-    expect("per-game auto read", RGC("PCSE00411")==1 && c.pg_jit==2);
-    { Impose o=mk("PCSE00411",1,0,1); o.advFlags=FPSVITA_ADV_AUTO; o.softcap=0; o.SavePerGame(); }
-    expect("Save writes auto", strstr(get(),"PCSE00411=1,lowlat=0,antilag=auto,limiter=0,tearing=0\n")!=NULL);
-    g_jit = 2;
+    expect("earlier per-game auto reads as on", RGC("PCSE00411")==1 && c.pg_jit==1);
+    { Impose o=mk("PCSE00411",1,0,1); o.advFlags=FPSVITA_ADV_JIT; o.softcap=0; o.SavePerGame(); }
+    expect("Save rewrites it as 1", strstr(get(),"PCSE00411=1,lowlat=0,antilag=1,limiter=0,tearing=0\n")!=NULL);
+    g_jit = 1;
     { Impose o=mk("",2,0,1); o.PersistState(); }
-    expect("config writes antilag=auto", strstr(getcfg(),"antilag=auto\n")!=NULL);
+    expect("config writes antilag=1", strstr(getcfg(),"antilag=1\n")!=NULL);
     g_jit = 0;
     putcfg("limit=2\nvsync=auto\nantilag=auto\n");
     int32_t iv=-9, inj=-9, ad=-9, hud=-9, pos=-9;
     expect("shell readGlobals succeeds", readGlobals(&iv,&inj,&ad,&hud,&pos));
-    expect("shell reads antilag=auto as 2", g_jit==2 && iv==2 && ad==1);
+    expect("shell reads earlier antilag=auto as on", g_jit==1 && iv==2 && ad==1);
     expect("no log= -> 0", RGC("PCSE00411")==1 && c.log==0 && g_rateLog==0);
     putcfg("limit=2\nlog=1\n");
     expect("shell reads log=1", readGlobals(&iv,&inj,&ad,&hud,&pos) && g_rateLog==1);
@@ -206,6 +222,13 @@ int main(){
     expect("config rewrite keeps log=1", strstr(getcfg(),"log=1\n")!=NULL);
     expect("helper reads log=1", RGC("PCSE00411")==1 && c.log==1);
     g_rateLog = 0;
+    putcfg("limit=2\nexperimental=1\ntips=0\n");
+    expect("shell reads experimental=1 and tips=0", readGlobals(&iv,&inj,&ad,&hud,&pos) && g_experimental==1 && g_tips==0);
+    { Impose o=mk("",2,0,1); o.PersistState(); }
+    expect("config rewrite keeps experimental=1 and tips=0", strstr(getcfg(),"experimental=1\ntips=0\n")!=NULL);
+    g_experimental = 0; g_tips = 1;
+    { Impose o=mk("",2,0,1); o.PersistState(); }
+    expect("defaults written as experimental=0 and tips=1", strstr(getcfg(),"experimental=0\ntips=1\n")!=NULL);
 
     printf("== 6. No config.txt: defaults, and nothing is read from state.txt ==\n");
     if(system("rm -f statedir/config.txt")){}
