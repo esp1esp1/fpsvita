@@ -141,7 +141,7 @@ inject and autodetect (Vsync), jit (Antilag), lowLatency (Lowlat), softcap (Limi
 3. **Ownership.** At the first display or GXM hook, the helper writes the title id (the
    kernel records its process as owner and clears old numbers), resets the native rate, and
    sets the limit and latency flags from the title's line or the globals. With `panel=` (and
-   `experimental=1` in `config.txt`) it then asks for the panel rate.
+   `panelmodes=1` in `config.txt`) it then asks for the panel rate.
 4. **Every frame.** Each hook reads the whole state with one copy-out syscall. No helper
    threads, no polling.
 5. **Quick menu and overlay.** The rows write the kernel, so changes are live; Save writes the
@@ -150,6 +150,32 @@ inject and autodetect (Vsync), jit (Antilag), lowLatency (Lowlat), softcap (Limi
 6. **Exit.** `module_stop` clears the title id, then restores the globals. A killed process
    skips `module_stop`: the kernel's process-exit handler clears the title id, numbers and
    panel rate, and the shell restores the globals at the next quick-menu open.
+
+### Kernel thread
+
+`fpsvita_btn` polls `ksceSysconGetControlsInfo` (the syscon driver's cached word, a
+microsecond) at 1 kHz while a title is owned and idles at 5 Hz otherwise, recording when the
+word last changed. SceCtrl samples that word once per vblank; the 2026-10-27 probe (exp
+16384) measured a press in the word 0/10/17 ms (min/mean/max) before SceCtrl's sample showed
+it. The helper's Antilag adds those presses to the game's samples and stamps them with the
+change time, so INPUT stays a measurement. The only polling in the project.
+
+### Panel auto
+
+`shell/panelauto.cpp` is a governor fed by `Hud::Update`'s poll (registered whenever the
+overlay or Auto is on; the shell ORs `FPSVITA_HUD_STATS` into the kernel's hud mode so the
+helper pushes with the overlay off). Engaged at the 60fps entry, or at Default with a
+native interval of 1, with Modes on and no SPEED compat flag (the limit is left alone, only
+the panel moves): every 2 s, a rate the game runs under 90% of or misses 3% at, twice in a row (a
+level load fills one window), drops straight to the highest rate the measured fps clears (credited for the doubled share, since a doubled frame counts one present for two periods); after a clean streak of the next step's `probeWait` (10 s, doubled
+when a probe of that step fails within 8 s, capped at 2 min, halved after a minute clean;
+capped at 40 s from the floor) it steps one rate up, never above the user's FPS-row pick (the
+ceiling); the window's fps is frames over wall time, not the helper's EMA; a failed probe returns to the rate
+it left (the fps at a missed rate undercounts). The ladder is 60, 50, 45, 40 (panel rates) and
+30 (the 30fps limit at the stock refresh, `s_atThirty`; unticking Auto restores the user's
+interval). Changes go through `fpsvitaSetPanel` from the shell pid; `PanelAuto::OwnChange` keeps
+them out of the overlay's LAST row. Dev builds log `PanelAuto: 60>45 fps=.. miss=..` to
+boot.log.
 
 ### Kernel exports
 
@@ -194,6 +220,36 @@ entry *i*:
 | 11-14 | `sceCtrlPeekBufferPositive`, `ReadBufferPositive`, `PeekBufferPositive2`, `ReadBufferPositive2` | `0xA9C3CED6` `0x67E7AB83` `0x15F81E8C` `0xC4226A3E` | Sample age, read phase, fresh poll, `read=peek` |
 | 15-22 | `sceCtrl` `Peek`/`Read` `BufferPositiveExt`, `PositiveExt2`, `Negative`, `Negative2` | `0xA59454D3` `0xE2D99296` `0x860BF292` `0xA7178860` `0x104ED1A7` `0x15F96FB0` `0x81A89660` `0x27A0C5FB` | Same; `Ext2` is what vitaGL ports use |
 | 23-24 | `sceTouchPeek`, `sceTouchRead` | `0xFF082DF0` `0x169A1D58` | Read phase only, on games with no controller hook |
+| 25 | `sceDisplayGetRefreshRate` | `0xA08CA60D` | Panel mode: report the granted rate instead of 59.94 |
+| 26 | `sceGxmVshInitialize` | `0xA04F5FAC` | Same as 9; vitaGL's entry point |
+
+All of these are import hooks on the main module (and on late modules, below), never on a
+module mapped at or above 0xE0000000: the loaded-module walk skips those, since their import
+stubs sit in the shared mapping too. Never hook SceGxm's exports from the helper: taiHEN writes a user export hook into the library's single
+mapping above 0xE0000000, which every process shares, so SceShell's next call jumps to a
+handler address that exists only in the game process. An AddEntry export hook took the
+whole device down on 2026-10-27; the init export hooks had only survived because nothing
+else called init at the time. Nor does the patch come off: after the hooking process exited,
+the shared `sceGxmVshInitialize` still jumped to the dead process's trampoline (THUG00001
+crash dump: pc 0x828c4bf0 in no module, r12 = SceGxm's export, LR in the helper), so the
+next title to initialise GXM crashed until a reboot. `tools/dump_regs.py` reads a psp2dmp.
+
+Titles on Sony's PowerVR GLES stack (PVR_PSP2: `libGLESv2`, `libIMGEGL`, `libpvrPSP2_WSEGL`,
+`libgpu_es4_ext`, all encrypted) are the one class that presents without the display queue.
+The Godot port (DriftR, HELP NO BRAKE, IDOL00001: one 17.7 MB eboot) and the LÖVE port
+(Balatro, Mari0) use it, NFS Hot Pursuit the GLES1 variant; 6 of 409 apps on the test device.
+The source is public (GrapheneCt/PVR_PSP2): the display class flips on its own thread
+(`sceDisplaySetFrameBuf` then a vblank wait, both imported by `libgpu_es4_ext` and found by the
+late-module path), and the app's swap, `PVRSRVSwapToDCBuffer` imported by
+`libpvrPSP2_WSEGL`, blocks until the previous flip is done, so the stack runs one frame in
+flight. The helper hooks that swap as its submit (hook 27, found by a walk of the loaded
+modules since libIMGEGL loads WSEGL out of the loader hooks' sight), so CPU, INPUT and QUEUE
+are measured, and Lowlat reads `ON (GAME'S OWN)`: there is no deeper queue to clamp. CPU on
+this stack is the thread's time between swaps, which includes the GL driver's own stalls on
+a busy GPU (HELP04040 reads 39 to 53 ms at 18 to 23 fps with 14 ms of pure CPU work). Before
+the swap hook lands, CPU comes from the flip-side measure (`noteFlipWork`,
+`FPSVITA_STATF_FLIPWORK`) and INPUT from the newest delivered sample's age at the flip.
+Hooking SceGxm's exports to reach inside the driver is what took the device down.
 
 For games that keep their display calls in a module loaded later, the helper also hooks
 `sceKernelLoadStartModule` (`0x2DCC4AFA`), `sceKernelStartModule` (`0x702425D5`) and
@@ -208,9 +264,9 @@ thread that reads input and submits keeps the queue short. Auto-detect engages a
 `FPSVITA_AUTODETECT_RATE_MARGIN_PCT` faster than the limit, and releases after
 `FPSVITA_AUTODETECT_RELEASE_STREAK` paced presents (`common/fpsvita_common.h` explains why).
 
-### Panel refresh (experimental)
+### Panel refresh
 
-`fpsvitaSetPanel` patches the vertical timing (vtotal and front porch) of the OLED's output
+`fpsvitaSetPanel` patches the vertical timing (vtotal and front porch) of the panel's output
 mode 0 entry in SceLowio's display timing table with `taiInjectDataForKernel`. The display
 controller re-reads it every frame, so the change is live with no mode switch. The kernel
 applies it only in output mode 0 and only when exactly one table entry matches every known
@@ -259,10 +315,10 @@ Each of these is load-bearing. The comments next to the code say more.
   `0xbfffffff`. All values come back through the `fpsvitaGetState` copy-out, wrapped by the
   `fpsvitaGet*()` helpers in `common/fpsvita_common.h`. Never add a getter that returns a
   value. The helper tests the immediate flip's result only for its sign.
-- **Deploy the kernel module, shell and helper together.** `fpsvitaGetState` copies
-  `sizeof(FpsvitaState)` into the caller's buffer, so a module built against a shorter struct
-  has its stack overrun. A new field means rebuilding and redeploying all three, and updating
-  the initializer in `companion/lite.h`.
+- **Deploy the kernel module, shell and helper together.** `fpsvitaGetState(out, size)` copies
+  `min(size, sizeof(FpsvitaState))`, so a module built against a shorter struct receives a
+  prefix rather than a stack overrun. A new field still means rebuilding and redeploying all
+  three, and updating the initializer in `companion/lite.h`.
 - **The kernel setters sanitise every value.** The helper passes the limit to the vblank wait
   as an unsigned count, so -2 would become `0xFFFFFFFE` and block the render thread for good.
   Hand-edited files and any process calling the syscall can both supply bad values.
@@ -282,8 +338,9 @@ Each of these is load-bearing. The comments next to the code say more.
   high-priority render thread does not starve audio and loader threads on the same core. The
   `CB` variants also process callbacks, or the game would stop receiving suspend and PS-button
   notifications.
-- **Take kernel ownership only once a display or GXM hook lands.** A game with its input in
-  the executable and its renderer in a later module must still get the loader hooks.
+- **Take kernel ownership only once a display or AddEntry hook lands.** A game with its input
+  in the executable and its renderer in a later module must still get the loader hooks; the
+  GXM init export hooks land in every resident process and do not count.
 - **Set the limit from the files at launch, never inherit it.** A killed process never runs
   `module_stop`, so the kernel may still hold the last game's override.
 - **`module_stop` clears the title id before restoring anything.** The shell treats a change
@@ -295,8 +352,12 @@ Each of these is load-bearing. The comments next to the code say more.
 - **`helperLog` allows one writer at a time** and drops a line after 20 ms rather than stall
   a game thread. `sceClibSnprintf` does not terminate a truncated string.
 - **The present counter is atomic.** Some titles present from more than one thread.
-- **Lowlat only applies where `sceGxmInitialize` goes through the hooked import.** Homebrew
-  that initialises GXM another way (DOOM64EX1) keeps showing `RESTART GAME`.
+- **Both GXM init entry points are hooked.** vitaGL calls `sceGxmVshInitialize`
+  (SceGxmInternalForVsh, same params) and is statically linked into every port's eboot, so
+  every recent port (THUG00001, BULLY0000, ROADRAGE2) had passed the old single hook and the
+  overlay read `RESTART GAME` for ever. The start line's `init=-i` says which import landed.
+  A title whose init never passes either hook reads `NOT HOOKED` (the stats carry an
+  init-seen flag).
 
 ### Shell
 
@@ -330,7 +391,7 @@ Each of these is load-bearing. The comments next to the code say more.
   `O_TRUNC` destroys profiles.
 - **Save keeps every other line verbatim**, including lines and keys this version does not
   know. `read=peek` is carried over on this title's line, and so is `panel=` unless
-  `experimental=1` puts it under the FPS row, which then writes it from the rate in force.
+  `panelmodes=1` puts it under the FPS row, which then writes it from the rate in force.
 - **Bound every `snprintf` copy.** `snprintf` returns the length it would have written, so
   adding it unchecked to an offset runs past the buffer.
 
@@ -339,6 +400,10 @@ Each of these is load-bearing. The comments next to the code say more.
 Both logs are in `ur0:data/fpsvita/`.
 
 ### helper.log
+
+At a helper start, `helper.log` is rotated to `helper.log.1` once it passes 256 KB (the old
+`.1` is replaced). `tools/ingest_playlog.py` reads `.1` first, then the current log, and
+clears both unless `--keep` is given.
 
 The helper always writes a few lines per game process at start-up, for example:
 
@@ -350,14 +415,16 @@ helper: gxm init pending=2 lowlat=0
 
 | Line | Fields |
 |---|---|
-| `helper: <TITLEID> ...` | `hooks`: hooks installed in the main module; `mask`: which ones (see [helper hooks](#helper-hooks)); `loaders`: loader hooks installed (0 when a display hook landed); `pergame`: the title's limit from `state.txt`, -99 for none; `read`: `read=peek` |
+| `helper: <TITLEID> ...` | `hooks`: hooks installed in the main module; `mask`: which ones (see [helper hooks](#helper-hooks)); `loaders`: loader hooks installed (0 when a display hook landed); `pergame`: the title's limit from `state.txt`, -99 for none; `read`: `read=peek`, including titles where the compatibility list applies it automatically |
 | `helper: env ...` | The title's VitaGrafix config section (`vg` is its `ENABLED`, -1 for none; `ib`, `fb` resolutions; `fps`) and the ARM, GPU and bus clocks in MHz |
 | `helper: late module <name> hooks+=<n> mask=...` | Hooks added from a module the game loaded later |
-| `helper: gxm init pending=<n> lowlat=<n>` | The display queue depth the game asked for, and whether Lowlat is on |
+| `helper: gxm init pending=<n> lowlat=<n>` | The display queue depth the game asked for, and whether Lowlat is on (`gxm vsh init` for vitaGL's entry point) |
 
 With `log=1` in `config.txt`, it also writes a `helper: rate` line every 3000 presents
 (frames 900, 3000, 6000 and so on), each measuring the 600 presents before it.
-`tools/ingest_playlog.py` turns them into TSV rows. Times are in microseconds:
+`tools/ingest_playlog.py` turns them into TSV rows. `tools/scan_eboot.py EBOOT...` lists a homebrew eboot's controller, touch,
+display and GXM imports against the hook table (compressed SELFs are decompressed; retail
+eboots are encrypted and print nothing), for a title whose hook mask has a gap. Times are in microseconds:
 
 | Field | Meaning |
 |---|---|
@@ -377,6 +444,10 @@ With `log=1` in `config.txt`, it also writes a `helper: rate` line every 3000 pr
 | `fscan`, `flag` | The frame's own input age and submit-to-flip at its flip (the INPUT and QUEUE rows) |
 | `tied`, `unmatched` | Flips matched to their submit by framebuffer address; flips with no submit found |
 | `miss`, `near` | Present periods near twice the limit; CPU frames over budget by 2 ms or less |
+| `rr` | Dev builds: `sceDisplayGetRefreshRate` times 1000 |
+| `hp`, `hpa` | Dev builds: present and AddEntry periods in four buckets of the cap budget (`<1.25`, `1.25-1.75`, `1.75-2.25`, `>2.25`), reset per rate line |
+| `lt` | Dev builds: late-tear flips in the window (exp bit 4096) |
+| `btn` | Dev builds: controller reads whose syscon button mask differed from the SceCtrl sample, and total reads (exp bit 8192) |
 | `imm=calls/errors/code` | Tearing's kernel flips, failures and the first error code |
 | `present_lag` | Unused, always 0 |
 

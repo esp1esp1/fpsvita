@@ -5,6 +5,7 @@
  * sanitising as the kernel setters.
  */
 #pragma once
+#include <string.h>
 #include "fpsvita_common.h"
 
 #define LITE_UNUSED __attribute__((unused))
@@ -12,7 +13,12 @@
 static FpsvitaState s_kstate = { FPSVITA_INTERVAL_OFF, FPSVITA_INJECT_OFF, FPSVITA_AUTODETECT_ON,
                                  0, {0, 0, 0}, FPSVITA_HUD_OFF, 0, 0, 0, {0} };
 
-LITE_UNUSED static int fpsvitaGetState(FpsvitaState *out) { *out = s_kstate; return 0; }
+LITE_UNUSED static int fpsvitaGetState(FpsvitaState *out, uint32_t size)
+{
+	uint32_t n = size < sizeof(s_kstate) ? size : sizeof(s_kstate);
+	memcpy(out, &s_kstate, n);
+	return 0;
+}
 
 LITE_UNUSED static void fpsvitaSetInterval(int32_t v)
 {
@@ -38,3 +44,4 @@ LITE_UNUSED static void fpsvitaSetAdvanced(int32_t flags, int32_t sc)
 LITE_UNUSED static void fpsvitaSetStats(const FpsvitaStats *in) { (void)in; }
 LITE_UNUSED static int fpsvitaSetFrameBufImmediate(const void *fb) { (void)fb; return -1; }
 LITE_UNUSED static void fpsvitaSetPanel(int32_t hz) { (void)hz; }   /* no kernel: stock refresh */
+LITE_UNUSED static int fpsvitaGetButtons(FpsvitaButtons *out) { (void)out; return -1; }   /* no kernel: SceCtrl sampling */

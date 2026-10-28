@@ -78,7 +78,7 @@ def render(entries):
     out.append("")
     out.append("struct FpsvitaCompatEntry { const char *id; unsigned flags; };")
     out.append("")
-    out.append("static const FpsvitaCompatEntry fpsvita_compat[] = {")
+    out.append("static const struct FpsvitaCompatEntry fpsvita_compat[] = {")
     for tid in sorted(entries):
         out.append(f'\t{{ "{tid}", {entries[tid]}u }},')
     out.append("};")

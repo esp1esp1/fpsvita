@@ -1,13 +1,14 @@
 /*
- * fpsvita overlay (see hud.h). Styled after PSVshellPlus's HUD: Mini is two
- * green lines with no box, Full a dialog box with uppercase labels on the
- * left and right-aligned values.
+ * fpsvita overlay (see hud.h). Styled after PSVshellPlus's HUD: Mini is one
+ * small green line with no box, Full a dialog box with uppercase labels on
+ * the left and right-aligned values.
  */
 
 #include <stdarg.h>
 #include <psp2/kernel/processmgr.h>
 #include "hud.h"
 #include "compat.h"
+#include "panelauto.h"
 
 using namespace paf;
 
@@ -26,24 +27,28 @@ extern "C" ui::Scene *pafPluginPageOpen(Plugin *self, const IDParam &id, const v
 #define FPSVITA_HUD_DRAW_PRIORITY 6        /* PSVshellPlus uses 6: above the game */
 
 #define FPSVITA_HUD_POLL_US 200000
-#define FPSVITA_HUD_ROWS 11
+#define FPSVITA_HUD_ROWS 12
 #define FPSVITA_HUD_WIDTH 350.0f           /* same as PSVshellPlus's box */
-#define FPSVITA_HUD_HEIGHT_FULL 302.0f     /* 11 rows of 26 px */
+#define FPSVITA_HUD_HEIGHT_FULL 328.0f     /* 12 rows of 26 px */
 #define FPSVITA_HUD_ROW_H 26.0f
-#define FPSVITA_HUD_SETTLE_US 3000000      /* the helper's EMAs after a launch or a toggle */
+#define FPSVITA_HUD_SETTLE_US 3000000      /* the helper's EMAs after a launch or a toggle (LAST row) */
 #define FPSVITA_HUD_TIP_HOLD_US 5000000    /* a new tip must hold this long before it replaces the shown one */
-#define FPSVITA_HUD_HEIGHT_MINI 60.0f
+#define FPSVITA_HUD_WINDOW 20              /* pushes kept for the tip rules and MISS: 5 s at four a second */
+#define FPSVITA_HUD_TIP_BASELINE_US 10000000 /* settle plus a window gathered after it, before the first tip */
+#define FPSVITA_HUD_WIDTH_MINI 520.0f      /* the Mini's root slot: the right-anchored copy ends at its edge */
+#define FPSVITA_HUD_HEIGHT_MINI 24.0f
 #define FPSVITA_SCREEN_W 960.0f
 #define FPSVITA_SCREEN_H 544.0f
 #define FPSVITA_HUD_MARGIN 10.0f
-#define HUD_BUF 64
+#define HUD_BUF 128                        /* the one-line Mini runs past 64 */
 
 namespace fpsvita {
 
 static ui::Scene  *s_page = NULL;
 static ui::Widget *s_root = NULL;   /* fc_plane_hud_root: moved and faded as a whole */
 static ui::Widget *s_box = NULL;    /* fc_plane_hud_box: Full only */
-static ui::Text   *s_mini[2];       /* Mini only */
+static ui::Text   *s_mini = NULL;   /* Mini only: one line, left-anchored (left corners) */
+static ui::Text   *s_miniR = NULL;  /* the same line right-anchored (right corners) */
 static ui::Text   *s_label[FPSVITA_HUD_ROWS];
 static ui::Text   *s_value[FPSVITA_HUD_ROWS];
 static bool s_registered = false;
@@ -62,6 +67,33 @@ static uint64_t s_now;              /* process time at the current poll */
 static uint64_t s_settleFrom;       /* tips wait for the EMAs after a launch or a toggle */
 static uint64_t s_launchTime;       /* the helper's profile push lands just after the title id */
 static bool     s_readPeek;         /* this title's state.txt line has read=peek */
+static bool     s_newSample;        /* this Refresh follows a new push */
+
+/* The last FPSVITA_HUD_WINDOW pushes: the tip rules only fire on a reading
+ * that held for the whole window (a limit missed on every push, a sample
+ * that was old on every push), and MISS is the window's share. Cleared with
+ * the settle timer. */
+struct HudSample { uint32_t presents, miss, fps, frame, queue, age, work; };
+static HudSample s_win[FPSVITA_HUD_WINDOW];
+static int      s_winN, s_winHead;
+
+static void winReset(void)
+{
+	s_winN = s_winHead = 0;
+}
+
+static void winPush(const FpsvitaStats &s)
+{
+	HudSample &w = s_win[s_winHead];
+	w.presents = s.presents; w.miss = s.miss; w.fps = s.fps_x10; w.frame = s.frame_us;
+	w.queue = s.queue_us; w.age = s.sample_age_us; w.work = s.work_us;
+	s_winHead = (s_winHead + 1) % FPSVITA_HUD_WINDOW;
+	if (s_winN < FPSVITA_HUD_WINDOW)
+		s_winN++;
+}
+
+static bool winFull(void) { return s_winN >= FPSVITA_HUD_WINDOW; }
+static const HudSample &winOldest(void) { return s_win[winFull() ? s_winHead : 0]; }
 
 /* Before/after readout: the INPUT and FPS values just before the last
  * toggle, shown against the current ones once they have settled. A Lowlat
@@ -87,11 +119,11 @@ static const wchar_t *s_tipCompat = L"";   /* the shown compat tip, kept through
 /* Row names borrow PC terms (PresentMon "CPU busy", Reflex-style latency):
  * INPUT is the frame's own newest controller sample to its flip, QUEUE its
  * submit-to-flip, both measured per frame by the helper. */
-enum { ROW_FPS, ROW_LIMIT, ROW_CPU, ROW_INPUT, ROW_QUEUE, ROW_ANTILAG, ROW_LOWLAT, ROW_LIMITER,
-       ROW_TIP, ROW_CHANGE, ROW_TITLE };
+enum { ROW_FPS, ROW_LIMIT, ROW_CPU, ROW_INPUT, ROW_QUEUE, ROW_MISS, ROW_ANTILAG, ROW_LOWLAT,
+       ROW_LIMITER, ROW_TIP, ROW_CHANGE, ROW_TITLE };
 static const wchar_t *const s_labels[FPSVITA_HUD_ROWS] = {
-	L"FPS:", L"LIMIT:", L"CPU:", L"INPUT:", L"QUEUE:", L"ANTI-LAG:", L"LOW LAT:", L"LIMITER:",
-	L"TIP:", L"LAST:", L"TITLE:"
+	L"FPS:", L"LIMIT:", L"CPU:", L"INPUT:", L"QUEUE:", L"MISS:", L"ANTI-LAG:", L"LOW LAT:",
+	L"LIMITER:", L"TIP:", L"LAST:", L"TITLE:"
 };
 
 /* Rows below TIP move up a slot when `tips=0` hides it; -1 is not shown. */
@@ -145,9 +177,9 @@ bool Hud::Open()
 
 	s_root = s_page->FindChild(IDParam("fc_plane_hud_root"), 0);
 	s_box  = s_page->FindChild(IDParam("fc_plane_hud_box"), 0);
-	s_mini[0] = findText("fc_text_hud_mini0");
-	s_mini[1] = findText("fc_text_hud_mini1");
-	bool ok = s_root && s_box && s_mini[0] && s_mini[1];
+	s_mini = findText("fc_text_hud_mini");
+	s_miniR = findText("fc_text_hud_mini_r");
+	bool ok = s_root && s_box && s_mini && s_miniR;
 	char id[24];
 	for (int i = 0; i < FPSVITA_HUD_ROWS; i++) {
 		sce_paf_snprintf(id, sizeof(id), "fc_text_hud_l%d", i);
@@ -201,22 +233,33 @@ void Hud::SetPosition()
 {
 	if (!s_root)
 		return;
-	float h = (g_hudMode == FPSVITA_HUD_FULL) ? fullHeight() : FPSVITA_HUD_HEIGHT_MINI;
+	bool full = (g_hudMode == FPSVITA_HUD_FULL);
+	float h = full ? fullHeight() : FPSVITA_HUD_HEIGHT_MINI;
+	float w = full ? FPSVITA_HUD_WIDTH : FPSVITA_HUD_WIDTH_MINI;
 	bool right  = (g_hudPos == 1 || g_hudPos == 3);
 	bool bottom = (g_hudPos == 2 || g_hudPos == 3);
-	math::v4 pos;
-	pos.set_x(right  ? FPSVITA_SCREEN_W - FPSVITA_HUD_WIDTH - FPSVITA_HUD_MARGIN : FPSVITA_HUD_MARGIN);
+	math::v4 pos, sz;
+	pos.set_x(right  ? FPSVITA_SCREEN_W - w - FPSVITA_HUD_MARGIN : FPSVITA_HUD_MARGIN);
 	pos.set_y(bottom ? -(FPSVITA_SCREEN_H - h - FPSVITA_HUD_MARGIN) : -FPSVITA_HUD_MARGIN);
 	s_root->SetPos(pos);
+	/* The root's size is what the right-anchored Mini copy hangs from: the
+	 * template's 350 px would end it mid-screen in a right corner. */
+	sz.set_x(w);
+	sz.set_y(h);
+	s_root->SetSize(sz);
 }
 
 void Hud::Apply()
 {
-	fpsvitaSetHud(g_hudMode, g_hudPos);
+	/* Panel auto needs the helper's push with the overlay off. */
+	fpsvitaSetHud(g_hudMode | (g_panelAuto ? FPSVITA_HUD_STATS : 0), g_hudPos);
 
 	if (g_hudMode == FPSVITA_HUD_OFF) {
 		SetVisible(false);
-		if (s_registered) {
+		if (g_panelAuto && !s_registered) {
+			common::MainThreadCallList::Register(Update, NULL);
+			s_registered = true;
+		} else if (!g_panelAuto && s_registered) {
 			common::MainThreadCallList::Unregister(Update, NULL);
 			s_registered = false;
 		}
@@ -227,14 +270,15 @@ void Hud::Apply()
 		return;
 
 	bool full = (g_hudMode == FPSVITA_HUD_FULL);
+	bool right = (g_hudPos == 1 || g_hudPos == 3);
 	if (full) {
 		widgetShow(s_box);
-		widgetHide(s_mini[0]);
-		widgetHide(s_mini[1]);
+		widgetHide(s_mini);
+		widgetHide(s_miniR);
 	} else {
 		widgetHide(s_box);
-		widgetShow(s_mini[0]);
-		widgetShow(s_mini[1]);
+		if (right) { widgetHide(s_mini); widgetShow(s_miniR); }
+		else       { widgetShow(s_mini); widgetHide(s_miniR); }
 	}
 	SetPosition();
 
@@ -267,11 +311,12 @@ void Hud::Update(void *arg)
 
 	FpsvitaState st;
 	sce_paf_memset(&st, 0, sizeof(st));
-	fpsvitaGetState(&st);
+	fpsvitaGetState(&st, sizeof(st));
 
 	/* The kernel clears the title id when the owning process exits. */
 	bool game = (st.titleid[0] & 0xFFu) != 0;
-	SetVisible(game);
+	PanelAuto::Tick(st, now, game);
+	SetVisible(game && g_hudMode != FPSVITA_HUD_OFF);
 	if (!game) {
 		s_lastTitle[0] = 0;   /* a relaunch of the same title is a launch, not a toggle */
 		return;
@@ -287,6 +332,7 @@ void Hud::Update(void *arg)
 		s_settleFrom = s_launchTime = now;
 		s_tipShown = s_tipCand = TIP_WAIT;
 		s_prevInput = s_prevFps = 0;
+		winReset();
 		s_readPeek = titleReadsPeek((const char *)st.titleid);
 		if (s_chg == CHG_LOWLAT && !s_chgArmed && st.titleid[0] == s_chgTitle[0]
 		    && st.titleid[1] == s_chgTitle[1] && st.titleid[2] == s_chgTitle[2]) {
@@ -318,8 +364,9 @@ void Hud::Update(void *arg)
 		else if ((st.adv_flags ^ s_lastAdv) & FPSVITA_ADV_TEAR)
 			chg = CHG_TEAR;
 		/* A toggle is a change seen while the game was presenting before and
-		 * after it; anything around a load or a teardown is not one. */
-		if (chg != CHG_NONE && s_prevFps && st.stats.fps_x10) {
+		 * after it; anything around a load or a teardown is not one, nor is
+		 * the governor stepping the rate. */
+		if (chg != CHG_NONE && s_prevFps && st.stats.fps_x10 && !PanelAuto::OwnChange(now)) {
 			s_chg = chg;
 			s_chgArmed = chg != CHG_LOWLAT;   /* Lowlat waits for the relaunch */
 			s_chgCheck = s_chgUnsaved = false;
@@ -327,6 +374,7 @@ void Hud::Update(void *arg)
 			s_chgTime = now;
 			s_settleFrom = now;
 			s_tipShown = s_tipCand = TIP_WAIT;
+			winReset();
 			s_chgInput = s_prevInput;
 			s_chgFps = s_prevFps;
 			sce_paf_memcpy(s_chgTitle, st.titleid, sizeof(s_chgTitle));
@@ -338,18 +386,30 @@ void Hud::Update(void *arg)
 	    && st.softcap == s_lastSoftcap && st.panel_hz == s_lastPanel)
 		return;
 	s_redraw = false;
+	s_newSample = st.stats.seq != s_lastSeq;
 	s_lastSeq = st.stats.seq;
 	s_lastInterval = st.interval;
 	s_lastNative = st.native_interval;
 	s_lastAdv = st.adv_flags;
 	s_lastSoftcap = st.softcap;
 	s_lastPanel = st.panel_hz;
+	if (g_hudMode == FPSVITA_HUD_OFF || !s_root)
+		return;   /* polling for the governor only */
 	Refresh(st);
 }
 
 /* "12.3" from microseconds, tenths of a millisecond. */
 #define MS_INT(us) ((unsigned)((us) / 1000u))
 #define MS_TENTH(us) ((unsigned)(((us) % 1000u) / 100u))
+
+/* "9.1" or "-" for a millisecond EMA, for the one-line Mini. */
+static const wchar_t *msText(wchar_t *buf, int n, uint32_t us)
+{
+	if (!us)
+		return L"-";
+	sce_paf_swprintf(buf, n, L"%u.%u", MS_INT(us), MS_TENTH(us));
+	return buf;
+}
 
 /* Format into a HUD line; a failed or overlong write leaves pos where it was. */
 static int appendW(wchar_t *buf, int pos, const wchar_t *fmt, ...)
@@ -392,7 +452,26 @@ void Hud::Refresh(const FpsvitaState &st)
 	int antilag = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
 	int reqTear = (st.adv_flags & FPSVITA_ADV_TEAR) != 0 && st.interval == FPSVITA_INTERVAL_UNCAPPED;
 	int onTear = (s.flags & FPSVITA_STATF_TEAR) != 0;
-	int haveWork = (s.flags & FPSVITA_STATF_ADDENTRY) != 0;
+	int haveWork = (s.flags & (FPSVITA_STATF_ADDENTRY | FPSVITA_STATF_FLIPWORK)) != 0;
+	int haveGxm = (s.flags & FPSVITA_STATF_ADDENTRY) != 0;   /* the queue rows and the sleep need AddEntry */
+	int initSeen = (s.flags & FPSVITA_STATF_GXM_INIT) != 0;   /* Lowlat had its chance */
+	if (s_newSample)
+		winPush(s);
+	/* MISS needs a target period: the cap, the Limiter under Uncapped, or
+	 * the game's own rate under Default (the helper counts against the same). */
+	bool missTarget = st.interval > 0
+	               || (st.interval == FPSVITA_INTERVAL_UNCAPPED && st.softcap > 0)
+	               || (st.interval == FPSVITA_INTERVAL_OFF && st.native_interval > 0);
+	uint32_t missPctX10 = 0;
+	bool haveMiss = false;
+	if (missTarget && winFull()) {
+		const HudSample &o = winOldest();
+		uint32_t dp = s.presents - o.presents, dm = s.miss - o.miss;
+		if (dp > 0 && dm <= dp) {
+			missPctX10 = dm * 1000u / dp;
+			haveMiss = true;
+		}
+	}
 	wchar_t wtid[FPSVITA_TITLEID_LEN];
 	{
 		const char *tid = (const char *)st.titleid;
@@ -409,35 +488,41 @@ void Hud::Refresh(const FpsvitaState &st)
 	int pos;
 
 	if (g_hudMode != FPSVITA_HUD_FULL) {
-		/* Line 1: rate and limit. Line 2: what is being done to the game. */
+		/* One line, the Full rows' numbers in order (FPS, frametime, 1% low,
+		 * CPU, INPUT, QUEUE), then the limit and what is active, in the short
+		 * forms so the worst case fits FPSVITA_HUD_WIDTH_MINI. */
+		wchar_t w1[16], w2[16], w3[16];
 		buf[0] = L'\0';
-		pos = appendW(buf, 0, L"%u FPS  ", fps_i);
-		if (mode)
-			pos = appendW(buf, pos, L"%ls", mode);
+		pos = appendW(buf, 0, L"%u.%u  %lsms  ", fps_i, fps_t, msText(w1, 16, s.frame_us));
+		if (s.low1_fps_x10)
+			pos = appendW(buf, pos, L"1%% %u  ", (s.low1_fps_x10 + 5) / 10);
+		pos = appendW(buf, pos, L"CPU %ls  IN %ls  Q %ls  ",
+		              msText(w1, 16, haveWork ? s.work_us : 0), msText(w2, 16, s.input_us),
+		              msText(w3, 16, s.queue_us));
+		bool autoOn = PanelAuto::Active();
+		if (autoOn) {   /* the governor's step: the panel rate, or 30 at its floor */
+			int hz = st.panel_hz > 0 ? (int)st.panel_hz : 60;
+			pos = appendW(buf, pos, L"AUTO %d  ", st.interval == FPSVITA_INTERVAL_30FPS ? 30 : hz);
+		} else if (mode)
+			pos = appendW(buf, pos, L"%ls  ", mode);
 		else
-			pos = appendW(buf, pos, L"LIMIT %d", capfps);
-		if (nat > 0)
-			pos = appendW(buf, pos, L" / OG:%d", nat);
-		textSet(s_mini[0], buf);
-
-		/* Short forms of what is active, so the worst case ("VSYNC  LL?  AL
-		 * LIM 50") fits the box: the full words run off the screen in the
-		 * right-hand corners. Full mode has the detail. */
-		buf[0] = L'\0';
-		pos = 0;
+			pos = appendW(buf, pos, L"LIMIT %d  ", capfps);
 		if (s.flags & FPSVITA_STATF_INJECT)
 			pos = appendW(buf, pos, L"VSYNC  ");
 		if (natLL || onLL)
 			pos = appendW(buf, pos, L"LL  ");
-		else if (reqLL)
+		else if (reqLL && initSeen)
 			pos = appendW(buf, pos, L"LL?  ");   /* requested, applies at the next launch */
+		else if (reqLL && s.fps_x10)
+			pos = appendW(buf, pos, L"LL-  ");   /* requested, the init call never passed the hook */
 		if (antilag)
 			pos = appendW(buf, pos, L"AL  ");
 		if (st.softcap > 0 && st.interval == FPSVITA_INTERVAL_UNCAPPED)
 			pos = appendW(buf, pos, L"LIM %d  ", (int)st.softcap);
-		if (st.panel_hz > 0)
+		if (st.panel_hz > 0 && !autoOn)
 			pos = appendW(buf, pos, L"%dHZ  ", (int)st.panel_hz);
-		textSet(s_mini[1], buf);
+		textSet(s_mini, buf);
+		textSet(s_miniR, buf);
 		return;
 	}
 
@@ -446,7 +531,12 @@ void Hud::Refresh(const FpsvitaState &st)
 	else
 		setRow(ROW_FPS, L"%u.%u", fps_i, fps_t);
 
-	if (st.panel_hz > 0 && mode)   /* experimental panel rate: the limit is in its vblanks */
+	if (PanelAuto::Active()) {   /* the governor holds the rate: one form for every step */
+		int hz = st.panel_hz > 0 ? (int)st.panel_hz : 60;
+		int step = st.interval == FPSVITA_INTERVAL_30FPS ? 30 : hz;   /* Default and 60fps both give one frame per refresh */
+		setRow(ROW_LIMIT, L"AUTO %d @%dHZ", step, hz);
+	}
+	else if (st.panel_hz > 0 && mode)   /* panel rate: the limit is in its vblanks */
 		setRow(ROW_LIMIT, L"%ls @%dHZ", mode, (int)st.panel_hz);
 	else if (st.panel_hz > 0)
 		setRow(ROW_LIMIT, L"%d @%dHZ", capfps, (int)st.panel_hz);
@@ -468,14 +558,32 @@ void Hud::Refresh(const FpsvitaState &st)
 	else
 		setRow(ROW_QUEUE, L"-");
 
+	/* Misses over the last window as a share of its presents, and the 1% low
+	 * over the helper's last 512 presents: the "does it hold the rate" row. */
+	if (haveMiss && s.low1_fps_x10)
+		setRow(ROW_MISS, L"%u.%u%%  1%% LOW %u.%u", missPctX10 / 10, missPctX10 % 10,
+		       s.low1_fps_x10 / 10, s.low1_fps_x10 % 10);
+	else if (haveMiss)
+		setRow(ROW_MISS, L"%u.%u%%", missPctX10 / 10, missPctX10 % 10);
+	else if (s.low1_fps_x10)
+		setRow(ROW_MISS, L"-  1%% LOW %u.%u", s.low1_fps_x10 / 10, s.low1_fps_x10 % 10);
+	else
+		setRow(ROW_MISS, L"-");
+
 	/* Anti-lag: the fresh poll is always at work once enabled; the value is
 	 * the whole-vblank sleep in force and the frames it has cost. */
+	/* BTN: how much newer the syscon's presses were than the vblank sample,
+	 * on the reads where they were (blank until a press has shown it). */
+	wchar_t btn[20];
+	btn[0] = L'\0';
+	if (antilag && s.btn_lead_us)
+		sce_paf_swprintf(btn, 20, L"  BTN -%u.%u", MS_INT(s.btn_lead_us), MS_TENTH(s.btn_lead_us));
 	if (!antilag)
 		setRow(ROW_ANTILAG, L"OFF");
 	else if (s.jit_slack_us)
-		setRow(ROW_ANTILAG, L"%u.%u ms / %u", MS_INT(s.jit_slack_us), MS_TENTH(s.jit_slack_us), (unsigned)s.jit_missed);
+		setRow(ROW_ANTILAG, L"%u.%u ms / %u%ls", MS_INT(s.jit_slack_us), MS_TENTH(s.jit_slack_us), (unsigned)s.jit_missed, btn);
 	else
-		setRow(ROW_ANTILAG, L"ON / %u", (unsigned)s.jit_missed);
+		setRow(ROW_ANTILAG, L"ON / %u%ls", (unsigned)s.jit_missed, btn);
 
 	/* A title that runs a 1-deep queue by itself gets nothing from the
 	 * option; say so instead of implying the user turned it on or off. */
@@ -483,8 +591,12 @@ void Hud::Refresh(const FpsvitaState &st)
 		setRow(ROW_LOWLAT, L"ON (GAME'S OWN)");
 	else if (reqLL && onLL)
 		setRow(ROW_LOWLAT, L"ON");
+	else if (reqLL && initSeen)
+		setRow(ROW_LOWLAT, L"RESTART GAME");   /* the init call came before the tick */
+	else if (reqLL && s.fps_x10)
+		setRow(ROW_LOWLAT, L"NOT HOOKED");     /* the game presents, its init never passed the hook */
 	else if (reqLL)
-		setRow(ROW_LOWLAT, L"RESTART GAME");
+		setRow(ROW_LOWLAT, L"");               /* no init yet, no frames yet */
 	else if (onLL)
 		setRow(ROW_LOWLAT, L"ON UNTIL RESTART");
 	else
@@ -506,15 +618,36 @@ void Hud::Refresh(const FpsvitaState &st)
 	 * its frames is a limit it cannot hold. */
 	int capfps_tip = capfps;
 	uint32_t vblank = st.panel_hz > 0 ? 1000000u / (uint32_t)st.panel_hz : FPSVITA_VBLANK_US;
-	bool settled = s_now - s_settleFrom >= FPSVITA_HUD_SETTLE_US;
-	/* A limit the game runs a tenth under. (A rolling double-period count was
-	 * tried and dropped: one cutscene load tripped it for the next 300 frames.) */
-	bool notHeld = capfps_tip > 0 && s.fps_x10 < (uint32_t)capfps_tip * 9u;
+	/* A tip needs a baseline: the settle time and a full window of pushes
+	 * gathered after it (the window starts with the settle timer, so the
+	 * baseline is their sum), and each rule's reading must have held on
+	 * every push in the window. A reading that wanders across a threshold
+	 * produces no tip; fewer tips beat wrong ones. */
+	bool settled = s_now - s_settleFrom >= FPSVITA_HUD_TIP_BASELINE_US && winFull();
+	bool notHeld = false, oldSample = false, queued = false, queueBound = false;
+	uint32_t workMax = 0;
+	if (settled) {
+		/* Panel auto acts on a limit the game cannot hold; its own tip would
+		 * only contradict it (TRY 20 at the governor's 30 floor). */
+		notHeld = capfps_tip > 0 && !PanelAuto::Active();
+		oldSample = queued = queueBound = true;
+		for (int i = 0; i < FPSVITA_HUD_WINDOW; i++) {
+			const HudSample &w = s_win[i];
+			/* A limit the game ran a tenth under on every push. (A rolling
+			 * double-period count was tried and dropped: one cutscene load
+			 * tripped it for the next 300 frames.) */
+			if (w.fps >= (uint32_t)capfps_tip * 9u) notHeld = false;
+			if (w.age < 10000u) oldSample = false;
+			if (w.queue < vblank) queued = false;
+			if (!w.frame || w.queue * 10u < w.frame * 8u) queueBound = false;
+			if (w.work > workMax) workMax = w.work;
+		}
+	}
 	/* Antilag's whole-vblank sleep only fits when the CPU work leaves a
 	 * vblank of headroom after its margins (2.5 ms each for the margin and
 	 * the fresh poll); MGS2 gameplay at 12 to 14 ms of work gained nothing. */
-	bool sleepFits = haveWork && (st.interval == FPSVITA_INTERVAL_30FPS || st.interval == FPSVITA_INTERVAL_20FPS)
-	              && s.work_us + 5000u + vblank <= vblank * (uint32_t)st.interval;
+	bool sleepFits = haveGxm && (st.interval == FPSVITA_INTERVAL_30FPS || st.interval == FPSVITA_INTERVAL_20FPS)
+	              && workMax + 5000u + vblank <= vblank * (uint32_t)st.interval;
 	const wchar_t *compat = fpsvitaCompatWarn(fpsvitaCompatFlags((const char *)st.titleid),
 	                                          st.interval, st.native_interval, s_readPeek);
 	if (compat)
@@ -524,9 +657,9 @@ void Hud::Refresh(const FpsvitaState &st)
 		cand = TIP_WAIT;
 	else if (notHeld)
 		cand = TIP_NOTHELD;
-	else if (!antilag && (s.sample_age_us >= 10000u || (sleepFits && s.queue_us >= vblank)))
+	else if (!antilag && (oldSample || (sleepFits && queued)))
 		cand = TIP_ANTILAG;
-	else if (!reqLL && !natLL && !onLL && s.frame_us && s.queue_us * 10u >= s.frame_us * 8u)
+	else if (!reqLL && !natLL && !onLL && queueBound)
 		cand = TIP_LOWLAT;
 	else if (compat)
 		cand = TIP_COMPAT;
@@ -538,21 +671,21 @@ void Hud::Refresh(const FpsvitaState &st)
 	}
 	if (s_tipShown == TIP_WAIT || cand == TIP_WAIT || s_now - s_tipCandSince >= FPSVITA_HUD_TIP_HOLD_US)
 		s_tipShown = cand;
-	const wchar_t *tip = L"...";
+	const wchar_t *tip = L"";   /* waiting: nothing to say yet */
 	switch (s_tipShown) {
-	case TIP_NONE:    tip = L"NONE"; break;
+	case TIP_NONE:    tip = L""; break;   /* nothing to suggest: say nothing */
 	case TIP_NOTHELD: tip = NULL; break;   /* formatted below: the rates follow the panel */
 	case TIP_ANTILAG: tip = L"TRY ANTI-LAG"; break;
 	case TIP_LOWLAT:  tip = L"TRY LOW LAT"; break;
 	case TIP_COMPAT:  tip = s_tipCompat; break;
 	default: break;
 	}
-	/* At a 60fps limit (stock or a refresh-rate entry), `experimental=1`
+	/* At a 60fps limit (stock or a refresh-rate entry), Panel modes
 	 * first offers a lower refresh rate the game clears by 15 percent:
 	 * Doom64EX at 44 fps held only 37 to 38 at 40 Hz, choppier than 30.
 	 * Never for a speed-tied title, where a lower rate is slow motion. */
 	int tryHz = 0;
-	if (!tip && st.interval == FPSVITA_INTERVAL_60FPS && fpsvitaPanelUi()
+	if (!tip && st.interval == FPSVITA_INTERVAL_60FPS && fpsvitaPanelUi() && !PanelAuto::Active()
 	    && !(fpsvitaCompatFlags((const char *)st.titleid) & FPSVITA_COMPAT_SPEED))
 		for (int32_t i = 0; i < FPSVITA_PANEL_RATES_LEN && !tryHz; i++)
 			if (fpsvita_panel_rates[i] < capfps_tip

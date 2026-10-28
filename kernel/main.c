@@ -14,6 +14,7 @@
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/kernel/suspend.h>
 #include <psp2kern/kernel/sysroot.h>
+#include <psp2kern/kernel/syscon.h>
 #include <taihen.h>
 #include <string.h>
 
@@ -74,7 +75,7 @@ static int32_t sanitizeInterval(int32_t v)
 	}
 }
 
-int fpsvitaGetState(FpsvitaState *out)
+int fpsvitaGetState(FpsvitaState *out, uint32_t size)
 {
 	FpsvitaState s;
 	int ret;
@@ -92,7 +93,9 @@ int fpsvitaGetState(FpsvitaState *out)
 	s.softcap         = g_softcap;
 	s.stats           = g_stats;
 	s.panel_hz        = g_panel_hz;
-	ret = ksceKernelCopyToUser(out, &s, sizeof(s));
+	if (size > sizeof(s))
+		size = sizeof(s);
+	ret = ksceKernelCopyToUser(out, &s, size);
 	SYSCALL_EXIT
 	return ret;
 }
@@ -150,7 +153,12 @@ void fpsvitaSetTitleIdPart(int32_t part, uint32_t value)
 void fpsvitaSetHud(int32_t mode, int32_t pos)
 {
 	SYSCALL_ENTER
-	g_hud_mode = (mode >= 0 && mode < FPSVITA_HUD_MODES) ? mode : FPSVITA_HUD_OFF;
+	/* The shell ORs FPSVITA_HUD_STATS in to get the helper's push with the
+	 * overlay off (Panel auto); the overlay mode itself is the low byte. */
+	{
+		int32_t m = mode & 0xFF;
+		g_hud_mode = ((m >= 0 && m < FPSVITA_HUD_MODES) ? m : FPSVITA_HUD_OFF) | (mode & FPSVITA_HUD_STATS);
+	}
 	g_hud_pos  = (pos >= 0 && pos < FPSVITA_HUD_POS_COUNT) ? pos : 0;
 	SYSCALL_EXIT
 }
@@ -366,6 +374,53 @@ void fpsvitaSetPanel(int32_t hz)
 	SYSCALL_EXIT
 }
 
+/* Syscon buttons for Antilag: SceCtrl samples the syscon's controls word
+ * once per vblank, the syscon driver refreshes it far more often (measured
+ * 2026-10-27: a press shows in the word 10 ms before SceCtrl's sample on
+ * average, 17 ms at most). A 1 kHz kernel thread keeps the word and the time
+ * it last changed, so the helper can hand the game a press early and stamp
+ * it honestly. The read is the driver's cached word, a microsecond; the
+ * thread idles at 5 Hz while no title is owned. */
+static volatile uint32_t g_btn_word;
+static volatile uint64_t g_btn_changed;
+static volatile int      g_btn_run = 1;
+static SceUID            g_btn_thread = -1;
+
+static int btnThread(SceSize args, void *argp)
+{
+	(void)args; (void)argp;
+	while (g_btn_run) {
+		if (g_owner_pid < 0) {
+			ksceKernelDelayThread(200000);
+			continue;
+		}
+		SceUInt32 w = 0;
+		if (ksceSysconGetControlsInfo(&w) >= 0 && w != g_btn_word) {
+			g_btn_word = w;
+			g_btn_changed = ksceKernelGetSystemTimeWide();
+		}
+		ksceKernelDelayThread(1000);
+	}
+	return 0;
+}
+
+int fpsvitaGetButtons(FpsvitaButtons *out)
+{
+	FpsvitaButtons b;
+	int ret = -1;
+	SYSCALL_ENTER
+	/* Owner only, like the stats push: no raw syscon read for any process. */
+	if (callerIsOwner() && g_btn_thread >= 0) {
+		b.raw = g_btn_word;
+		b.pad = 0;
+		b.changed_at = g_btn_changed;
+		b.now = ksceKernelGetSystemTimeWide();
+		ret = ksceKernelCopyToUser(out, &b, sizeof(b));
+	}
+	SYSCALL_EXIT
+	return ret;
+}
+
 static int procExit(SceUID pid, SceProcEventInvokeParam1 *a2, int a3)
 { ownerGone(pid); return 0; }
 static int procKill(SceUID pid, SceProcEventInvokeParam1 *a2, int a3)
@@ -384,6 +439,11 @@ int __module_start(SceSize args, const void *argp)
 	g_proc_event = ksceKernelRegisterProcEventHandler("fpsvita", &h, 0);
 	g_panel_lock = ksceKernelCreateMutex("fpsvita_panel", 0, 0, NULL);
 	g_sys_event = ksceKernelRegisterSysEventHandler("fpsvita_sysevent", sysEvent, NULL);
+	g_btn_thread = ksceKernelCreateThread("fpsvita_btn", btnThread, 0x3C, 0x1000, 0, 0, NULL);
+	if (g_btn_thread >= 0 && ksceKernelStartThread(g_btn_thread, 0, NULL) < 0) {
+		ksceKernelDeleteThread(g_btn_thread);
+		g_btn_thread = -1;
+	}
 	return SCE_KERNEL_START_SUCCESS;
 }
 
@@ -394,6 +454,11 @@ int __module_stop(SceSize args, const void *argp)
 	if (g_sys_event >= 0)
 		ksceKernelUnregisterSysEventHandler(g_sys_event);
 	panelSet(0);
+	if (g_btn_thread >= 0) {
+		g_btn_run = 0;
+		ksceKernelWaitThreadEnd(g_btn_thread, NULL, NULL);
+		ksceKernelDeleteThread(g_btn_thread);
+	}
 	if (g_panel_lock >= 0)
 		ksceKernelDeleteMutex(g_panel_lock);
 	return SCE_KERNEL_STOP_SUCCESS;

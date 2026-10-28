@@ -6,7 +6,7 @@ quick menu while a game runs, and it keeps a profile per game.
 
 | Overlay | Frame limit | Quick menu |
 |---|---|---|
-| ![Dead or Alive 5 Plus with Lowlat and Antilag on: INPUT 21.0 ms at 60 fps](docs/images/doa5-lowlat.jpg) | ![The Swapper at a 30 limit: a steady 30 fps](docs/images/swapper-30.jpg) | ![fpsvita's three rows in the quick menu: FPS, Limiter, HUD, Corner, Lowlat, Antilag and Save](docs/images/quick-menu.jpg) |
+| ![Dead or Alive 5 Plus with Lowlat and Antilag on: INPUT 21.0 ms at 60 fps](docs/images/doa5-lowlat.jpg) | ![The Swapper at a 30 limit: a steady 30 fps](docs/images/swapper-30.jpg) | ![fpsvita's four rows in the quick menu: FPS, Limiter, HUD, Corner, Lowlat, Antilag, Save, and the Panel row's Modes and Auto](docs/images/quick-menu-panel.jpg) |
 
 *Left: Dead or Alive 5 Plus with Lowlat and Antilag, INPUT 21 ms at 60 fps. Middle: The
 Swapper held at a steady 30. Right: fpsvita's rows in the quick menu. Before and after
@@ -15,8 +15,9 @@ shots are [below](#before-and-after).*
 ## What it does
 
 - **Antilag**: hands the game a newer controller sample so a button press reaches the screen
-  sooner, without changing the game's frame rate. On by default; at a 30 or 20 limit it also
-  moves the game's input read later.
+  sooner, without changing the game's frame rate. Button presses come straight from the
+  controller chip, about 10 ms ahead of the system's once-per-refresh sample. On by default;
+  at a 30 or 20 limit it also moves the game's input read later.
 - **Overlay**: frame rate, CPU time, input age (INPUT) and queue time over the game, plus a
   TIP row with advice (`tips=0` turns it off) and a LAST row with before/after numbers for
   your last change.
@@ -24,10 +25,10 @@ shots are [below](#before-and-after).*
   40 or 45, and immediate flips.
 - **Frame limits**: 60, 30, 20 fps or uncapped, plus a Vsync wait for games that never wait.
 - **Per-game profiles**: Save stores a game's settings, which load at its next launch.
-- **Panel refresh (experimental)**: runs the screen at a lower rate such as 40 or 45 Hz for
-  one game, so a game that cannot hold 60 gets evenly paced frames. Turn it on with
-  `experimental=1`, then pick 50Hz, 45Hz or 40Hz on the FPS row. Tested on the OLED model; the
-  Slim accepted 40 Hz in two reports.
+- **Panel refresh**: runs the screen at a lower rate such as 40 or 45 Hz for one game, so a
+  game that cannot hold 60 gets evenly paced frames. Tick Modes on the quick menu's Panel row,
+  then pick 50Hz, 45Hz or 40Hz on the FPS row, or tick Auto and let fpsvita hold the highest
+  rate the game keeps up with. OLED and Slim.
 - **Lite mode**: one plugin and two text files, without the quick menu or overlay.
 
 Seven titles have measured before/after numbers in

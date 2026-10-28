@@ -13,6 +13,8 @@ extern paf::ui::ScrollView *g_imposeRoot;
  * at boot and updated when the player changes the mode with no game running.
  */
 extern int32_t g_globalInterval;
+extern int32_t g_globalInject;
+extern int32_t g_globalAutodetect;
 
 /* Overlay mode and position (config.txt `hud=` and `hudpos=`), owned by the
  * shell and mirrored into the kernel so the helper knows whether to push
@@ -31,10 +33,18 @@ extern int32_t g_tear;
  * shell only carries it through its config.txt rewrites. */
 extern int32_t g_rateLog;
 
-/* `experimental=1`: the FPS row's refresh-rate entries and the overlay's
+/* `syscon=0`: Antilag without the syscon presses (default 1). No menu row;
+ * the shell only carries it through its config.txt rewrites. */
+extern int32_t g_syscon;
+
+/* `panelmodes=1` (the Panel row's Modes box; the older `experimental=1`
+ * reads the same): the FPS row's refresh-rate entries and the overlay's
  * refresh-rate tip (the helper also ignores per-game `panel=` without it).
- * `tips=0`: no overlay TIP row and no quick-menu (!). Neither has a menu row. */
-extern int32_t g_experimental;
+ * `panelauto=1` (the Auto box): the shell steps the rate to what the game
+ * holds (shell/panelauto.cpp). `tips=0`: no overlay TIP row and no quick-menu
+ * (!); no menu row. */
+extern int32_t g_panelModes;
+extern int32_t g_panelAuto;
 extern int32_t g_tips;
 
 /* The FPS row's refresh-rate entries: one frame per refresh at each. */

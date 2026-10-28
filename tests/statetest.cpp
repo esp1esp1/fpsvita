@@ -22,6 +22,7 @@ typedef int SceUID;
 #define SCE_O_TRUNC  8
 
 static FILE *g_fh[8];
+static int g_shortWrite = 0;
 static SceUID sceIoOpen(const char *p, int fl, int) {
     FILE *f = fopen(p, (fl & SCE_O_WRONLY) ? "wb" : "rb");
     if (!f) return -1;
@@ -29,8 +30,13 @@ static SceUID sceIoOpen(const char *p, int fl, int) {
     fclose(f); return -1;
 }
 static int sceIoRead(SceUID fd, void *b, int n)  { return (int)fread(b,1,n,g_fh[fd]); }
-static int sceIoWrite(SceUID fd, const void *b, int n){ return (int)fwrite(b,1,n,g_fh[fd]); }
+static int sceIoWrite(SceUID fd, const void *b, int n){
+    int w = (int)fwrite(b,1,n,g_fh[fd]);
+    return g_shortWrite && w > 0 ? w - 1 : w;
+}
 static void sceIoClose(SceUID fd) { fclose(g_fh[fd]); g_fh[fd]=NULL; }
+static int sceIoRemove(const char *p) { return remove(p); }
+static int sceIoRename(const char *a, const char *b) { return rename(a,b); }
 static void sceIoMkdir(const char *p, int) { char c[256]; snprintf(c,sizeof c,"mkdir -p %s",p); if(system(c)){} }
 
 #define sce_paf_memset   memset
@@ -45,12 +51,15 @@ static void sceIoMkdir(const char *p, int) { char c[256]; snprintf(c,sizeof c,"m
 static int sce_paf_snprintf(char *b, size_t n, const char *f, ...) {
     va_list a; va_start(a,f); int r = vsnprintf(b,n,f,a); va_end(a); return r;
 }
+static int sceClibSnprintf(char *b, size_t n, const char *f, ...) {
+    va_list a; va_start(a,f); int r = vsnprintf(b,n,f,a); va_end(a); return r;
+}
 
 static int32_t g_globalInterval = -1;
 static int32_t g_hudMode = 0, g_hudPos = 0;
 static int32_t g_lowLatency = 0, g_jit = 0, g_softcap = 0, g_tear = 0, g_advShown = 0, g_rateLog = 0;
-static int32_t g_experimental = 0, g_tips = 1;
-static bool fpsvitaPanelUi(void) { return g_experimental != 0; }
+static int32_t g_panelModes = 0, g_panelAuto = 0, g_tips = 1, g_syscon = 1;
+static bool fpsvitaPanelUi(void) { return g_panelModes != 0; }
 #define FPSVITA_ADV_LOWLAT (1 << 0)
 #define FPSVITA_ADV_JIT    (1 << 1)
 #define FPSVITA_ADV_TEAR   (1 << 2)
@@ -69,7 +78,7 @@ struct Impose {
 
 /* companion side */
 namespace comp {
-typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int pg_read; int32_t pg_panel; int log; int experimental; } HelperConfig;
+typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int32_t pg_vsync; int pg_read; int32_t pg_panel; int log; int syscon; int panelmodes; } HelperConfig;
 #include "comp_io.inc"
 }
 
@@ -170,11 +179,20 @@ int main(){
     expect("no per-game options -> -1", c.pg_ll==-1 && c.pg_jit==-1 && c.pg_sc==-1 && c.pg_tear==-1);
     put("PCSE00411=2,lowlat=1,antilag=0,limiter=45,read=peek\nPCSB00069=3\n");
     expect("per-game options read", RGC("PCSE00411")==2 && c.pg_ll==1 && c.pg_jit==0 && c.pg_sc==45);
-    expect("per-game read=peek read", c.pg_read==1);
+    put("PCSE00411=1,vsync=1\n");
+    expect("per-game vsync=1 reads as forced on", RGC("PCSE00411")==1 && c.pg_vsync==2);
+    put("PCSE00411=1,vsync=0\n");
+    expect("per-game vsync=0 reads as forced off", RGC("PCSE00411")==1 && c.pg_vsync==1);
+    put("PCSE00411=1,vsync=auto\n");
+    expect("per-game vsync=auto reads as auto", RGC("PCSE00411")==1 && c.pg_vsync==0);
+    put("PCSE00411=1\n");
+    expect("no per-game vsync -> absent", RGC("PCSE00411")==1 && c.pg_vsync==-1);
+    put("PCSE00411=2,lowlat=1,antilag=0,limiter=45,read=peek\nPCSB00069=3\n");
+    expect("per-game read=peek read", RGC("PCSE00411")==2 && c.pg_read==1);
     expect("plain line unaffected", RGC("PCSB00069")==3 && c.pg_ll==-1);
-    put("PCSE00411=1,read=peek\n");
+    put("PCSE00411=1,vsync=1,read=peek\n");
     { Impose o=mk("PCSE00411",1,0,1); o.SavePerGame(); }
-    expect("Save keeps read=peek", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek\n")!=NULL);
+    expect("Save keeps vsync= and read=peek", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,vsync=1,read=peek\n")!=NULL);
     put("PCSE00411=1,read=peek,panel=40\n");
     { Impose o=mk("PCSE00411",1,0,1); o.SavePerGame(); }
     expect("Save keeps read=peek and panel=", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek,panel=40\n")!=NULL);
@@ -183,7 +201,7 @@ int main(){
     expect("helper reads panel= with experimental=1", RGC("PCSE00411")==1 && c.pg_panel==40 && c.pg_read==1);
     expect("experimental= is a global, not a title", c.pergame==1);
     /* experimental=1: the FPS row owns panel=, written from the rate in force */
-    g_experimental = 1;
+    g_panelModes = 1;
     { Impose o=mk("PCSE00411",1,0,1); o.currentPanel=45; o.SavePerGame(); }
     expect("Save writes the rate in force", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek,panel=45\n")!=NULL
                                             && count(get(),"panel=")==1);
@@ -191,7 +209,7 @@ int main(){
     expect("stock refresh drops panel=", strstr(get(),"PCSE00411=1,lowlat=0,antilag=0,limiter=0,tearing=0,read=peek\n")!=NULL);
     { Impose o=mk("PCSA00009",1,0,1); o.currentPanel=40; o.SavePerGame(); }
     expect("a new line gets panel=", strstr(get(),"PCSA00009=1,lowlat=0,antilag=0,limiter=0,tearing=0,panel=40\n")!=NULL);
-    g_experimental = 0;
+    g_panelModes = 0;
     putcfg("");
     put("PCSE00411=1\n");
     expect("no panel= -> 0", RGC("PCSE00411")==1 && c.pg_panel==0);
@@ -223,15 +241,26 @@ int main(){
     expect("helper reads log=1", RGC("PCSE00411")==1 && c.log==1);
     g_rateLog = 0;
     putcfg("limit=2\nexperimental=1\ntips=0\n");
-    expect("shell reads experimental=1 and tips=0", readGlobals(&iv,&inj,&ad,&hud,&pos) && g_experimental==1 && g_tips==0);
+    expect("shell reads the pre-0.4 experimental=1 as panelmodes, and tips=0", readGlobals(&iv,&inj,&ad,&hud,&pos) && g_panelModes==1 && g_tips==0);
+    expect("helper reads experimental=1 as panelmodes", RGC("PCSE00411")==1 && c.panelmodes==1);
     { Impose o=mk("",2,0,1); o.PersistState(); }
-    expect("config rewrite keeps experimental=1 and tips=0", strstr(getcfg(),"experimental=1\ntips=0\n")!=NULL);
-    g_experimental = 0; g_tips = 1;
+    expect("config rewrite writes panelmodes=1 and tips=0", strstr(getcfg(),"panelmodes=1\npanelauto=0\ntips=0\n")!=NULL && strstr(getcfg(),"experimental=")==NULL);
+    putcfg("limit=2\npanelmodes=1\npanelauto=1\n");
+    expect("shell reads panelmodes=1 and panelauto=1", readGlobals(&iv,&inj,&ad,&hud,&pos) && g_panelModes==1 && g_panelAuto==1);
+    expect("helper reads panelmodes=1", RGC("PCSE00411")==1 && c.panelmodes==1);
+    g_panelModes = 0; g_panelAuto = 0; g_tips = 1;
     { Impose o=mk("",2,0,1); o.PersistState(); }
-    expect("defaults written as experimental=0 and tips=1", strstr(getcfg(),"experimental=0\ntips=1\n")!=NULL);
+    expect("defaults written as panelmodes=0, panelauto=0 and tips=1", strstr(getcfg(),"panelmodes=0\npanelauto=0\ntips=1\n")!=NULL);
+    expect("no syscon= -> 1 (Antilag's syscon presses on)", RGC("PCSE00411")==1 && c.syscon==1 && g_syscon==1);
+    putcfg("limit=2\nsyscon=0\n");
+    expect("shell reads syscon=0", readGlobals(&iv,&inj,&ad,&hud,&pos) && g_syscon==0);
+    { Impose o=mk("",2,0,1); o.PersistState(); }
+    expect("config rewrite keeps syscon=0", strstr(getcfg(),"syscon=0\n")!=NULL);
+    expect("helper reads syscon=0", RGC("PCSE00411")==1 && c.syscon==0);
+    g_syscon = 1;
 
     printf("== 6. No config.txt: defaults, and nothing is read from state.txt ==\n");
-    if(system("rm -f statedir/config.txt")){}
+    if(system("rm -f statedir/config.txt statedir/config.txt.bak")){}
     put("limit=3\nlowlat=1\nPCSE00411=1\n");
     expect("globals stay at defaults without config.txt", RGC("PCSE00411")==1 && c.interval==-1 && c.lowlatency==0);
 
@@ -244,6 +273,33 @@ int main(){
     expect("A -> 3", RGC("PCSA00001")==3);
     expect("B -> 1", RGC("PCSA00002")==1);
     expect("global 2", c.interval==2);
+
+    printf("== 8. Atomic saves and .bak fallback ==\n");
+    put("PCSE00411=1\n");
+    { Impose o=mk("PCSB00069",3,0,1); o.SavePerGame(); }
+    expect("save keeps the previous file as .bak",
+           strstr(getf("statedir/state.txt.bak"),"PCSE00411=1")!=NULL);
+    {
+        std::string before = get();
+        g_shortWrite = 1;
+        { Impose o=mk("PCSB00069",1,0,1); o.SavePerGame(); }
+        g_shortWrite = 0;
+        expect("short write leaves state.txt intact", get()==before);
+        FILE *f = fopen("statedir/state.txt.tmp", "rb");
+        expect("short write removes the temporary file", f == NULL);
+        if (f) fclose(f);
+    }
+    putf("statedir/state.txt.bak", "PCSE00411=1,read=peek\n");
+    if (remove("statedir/state.txt")) {}
+    expect("shell reads .bak when state.txt is missing", titleReadsPeek("PCSE00411"));
+    expect("helper reads .bak when state.txt is missing", RGC("PCSE00411")==1);
+    putf("statedir/config.txt.bak", "limit=2\n");
+    if (remove("statedir/config.txt")) {}
+    {
+        int32_t iv=-9, inj=-9, ad=-9, hud=-9, pos=-9;
+        expect("shell reads config.txt.bak when config.txt is missing",
+               readGlobals(&iv,&inj,&ad,&hud,&pos) && iv==2);
+    }
 
     printf("\n%s (%d failures)\n", fails? "RESULT: FAILURES":"RESULT: ALL PASS", fails);
     return fails;

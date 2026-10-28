@@ -11,4 +11,7 @@
   <string src="Lowlat" id="fc_msg_lowlat" />
   <string src="Antilag" id="fc_msg_jit" />
   <string src="Limiter:" id="fc_msg_softcap" />
+  <string src="Panel:" id="fc_msg_panel" />
+  <string src="Modes" id="fc_msg_panel_modes" />
+  <string src="Auto" id="fc_msg_panel_auto" />
 </stringset>

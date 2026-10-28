@@ -105,7 +105,9 @@ extern "C" {
  * cleared on the way back to user mode (-1 arrives as 0xbfffffff), which
  * breaks FPSVITA_INTERVAL_OFF and any packed title-id word containing a
  * byte with bit 6 set. The fpsvitaGet*() helpers below keep the old call
- * sites working. */
+ * sites working. The size argument lets a reader built against a shorter
+ * struct receive only the prefix it knows; the kernel copies
+ * min(size, sizeof(FpsvitaState)). */
 /*
  * Overlay (HUD) drawn by the shell over the running game. The shell owns the
  * mode and position (config.txt keys `hud=` and `hudpos=`), the helper only
@@ -115,6 +117,7 @@ extern "C" {
 #define FPSVITA_HUD_MINI  (1)   /* fps, cap, and whatever is active */
 #define FPSVITA_HUD_FULL  (2)   /* plus frame time, lag, controller phase */
 #define FPSVITA_HUD_MODES (3)
+#define FPSVITA_HUD_STATS (0x100)   /* OR'd into the mode by the shell: push stats with the overlay off (Panel auto) */
 #define FPSVITA_HUD_POS_COUNT (4) /* 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right */
 
 /*
@@ -140,6 +143,10 @@ static const int32_t fpsvita_softcap_cycle[] = {0, 20, 24, 25, 30, 40, 45, 50, 6
 #define FPSVITA_STATF_ADDENTRY   (1u << 3)  /* AddEntry hooked: work/queue/input are valid */
 #define FPSVITA_STATF_TEAR       (1u << 4)  /* tearing flips are going through the kernel */
 #define FPSVITA_STATF_LOWLAT_NATIVE (1u << 5) /* the title itself asked for a 1-deep queue */
+#define FPSVITA_STATF_GXM_INIT   (1u << 6)  /* the sceGxmInitialize hook ran: Lowlat could act */
+#define FPSVITA_STATF_FLIPWORK   (1u << 7)  /* work_us is the flip-side work: the frame's own
+                                             * time from its pacing wait to the flip. Titles with
+                                             * no AddEntry (the PowerVR GLES stack) get it. */
 
 typedef struct FpsvitaStats {
 	uint32_t fps_x10;       /* presents per second, times 10 */
@@ -153,6 +160,10 @@ typedef struct FpsvitaStats {
 	uint32_t flags;         /* FPSVITA_STATF_* */
 	uint32_t jit_missed;    /* frames over budget while jit was sleeping (each one gates it) */
 	uint32_t sample_age_us; /* age of the controller sample the game gets, EMA (0: no ctrl hook) */
+	uint32_t presents;      /* SetFrameBuf calls since launch */
+	uint32_t miss;          /* presents about twice the target period (cap, Limiter, or the game's own rate) */
+	uint32_t low1_fps_x10;  /* 1% low: the slowest percent of the last 512 presents, times 10 (0: not yet) */
+	uint32_t btn_lead_us;   /* Antilag's syscon presses: how much newer than the sample, EMA (0: none yet) */
 	uint32_t seq;           /* bumps per push; 0 = nothing pushed yet */
 } FpsvitaStats;
 
@@ -174,9 +185,11 @@ typedef struct FpsvitaState {
 #define FPSVITA_PANEL_HZ_MIN (24)
 #define FPSVITA_PANEL_HZ_MAX (59)
 
-/* Copies sizeof(FpsvitaState) to user memory. The three modules must be
- * deployed together: a reader built against a shorter struct would have its
- * stack overrun by the copy.
+/* Copies min(size, sizeof(FpsvitaState)) to user memory. Callers pass
+ * sizeof their own FpsvitaState, so a reader built against a shorter struct
+ * receives only the prefix it knows instead of a stack overrun. The three
+ * modules should still be deployed together: fields added in a newer kernel
+ * are absent until all three are updated.
  *
  * The lite helper (FPSVITA_LITE) has no kernel module: the same functions
  * are file-local over a process-private copy of the state (companion/lite.h). */
@@ -185,7 +198,7 @@ typedef struct FpsvitaState {
 #else
 #define FPSVITA_API
 #endif
-FPSVITA_API int  fpsvitaGetState(FpsvitaState *out);
+FPSVITA_API int  fpsvitaGetState(FpsvitaState *out, uint32_t size);
 FPSVITA_API void fpsvitaSetInterval(int32_t interval);
 FPSVITA_API void fpsvitaSetInject(int32_t inject);
 FPSVITA_API void fpsvitaSetAutodetect(int32_t autodetect);
@@ -195,15 +208,25 @@ FPSVITA_API void fpsvitaSetAdvanced(int32_t flags, int32_t softcap);
 FPSVITA_API void fpsvitaSetStats(const FpsvitaStats *in);  /* copy-in from user memory */
 FPSVITA_API int  fpsvitaSetFrameBufImmediate(const void *fb); /* experiment: kernel IMMEDIATE flip */
 FPSVITA_API void fpsvitaSetPanel(int32_t hz);   /* owner or the shell, while a title runs; 0 = stock */
+/* The syscon's controls word as the kernel last saw it (polled at 1 kHz while
+ * a title is owned), when it last changed, and the kernel clock at the call so
+ * the caller can move changed_at into its own clock. Owner only. */
+typedef struct FpsvitaButtons {
+	uint32_t raw;         /* ksceSysconGetControlsInfo word, released = 1 bits */
+	uint32_t pad;
+	uint64_t changed_at;  /* kernel clock (ksceKernelGetSystemTimeWide) */
+	uint64_t now;         /* kernel clock at this call */
+} FpsvitaButtons;
+FPSVITA_API int  fpsvitaGetButtons(FpsvitaButtons *out);
 
 static inline int32_t fpsvitaGetInterval(void)
-{ FpsvitaState s; s.interval = FPSVITA_INTERVAL_OFF; fpsvitaGetState(&s); return s.interval; }
+{ FpsvitaState s; s.interval = FPSVITA_INTERVAL_OFF; fpsvitaGetState(&s, sizeof(s)); return s.interval; }
 static inline int32_t fpsvitaGetInject(void)
-{ FpsvitaState s; s.inject = 0; fpsvitaGetState(&s); return s.inject; }
+{ FpsvitaState s; s.inject = 0; fpsvitaGetState(&s, sizeof(s)); return s.inject; }
 static inline int32_t fpsvitaGetAutodetect(void)
-{ FpsvitaState s; s.autodetect = 1; fpsvitaGetState(&s); return s.autodetect; }
+{ FpsvitaState s; s.autodetect = 1; fpsvitaGetState(&s, sizeof(s)); return s.autodetect; }
 static inline int32_t fpsvitaGetNativeInterval(void)
-{ FpsvitaState s; s.native_interval = 0; fpsvitaGetState(&s); return s.native_interval; }
+{ FpsvitaState s; s.native_interval = 0; fpsvitaGetState(&s, sizeof(s)); return s.native_interval; }
 
 /*
  * Titleid is stored as 3 x uint32_t (12 bytes, fits 9-char titleid + null).
@@ -212,10 +235,14 @@ static inline int32_t fpsvitaGetNativeInterval(void)
  */
 FPSVITA_API void fpsvitaSetTitleIdPart(int32_t part, uint32_t value);
 static inline uint32_t fpsvitaGetTitleIdPart(int32_t part)
-{ FpsvitaState s; s.titleid[0] = s.titleid[1] = s.titleid[2] = 0; fpsvitaGetState(&s); return (part >= 0 && part < 3) ? s.titleid[part] : 0; }
+{ FpsvitaState s; s.titleid[0] = s.titleid[1] = s.titleid[2] = 0; fpsvitaGetState(&s, sizeof(s)); return (part >= 0 && part < 3) ? s.titleid[part] : 0; }
 
 /* Max length for titleid strings (9 chars + null) */
 #define FPSVITA_TITLEID_LEN 12
+
+/* The PSP emulator's Vita title. fpsvita does not hook the PSP emulator
+ * process, so both the shell (rows) and the helper (hooks) skip it. */
+#define FPSVITA_ADRENALINE_TITLEID "PSPEMUCFW"
 
 #ifdef __cplusplus
 }

@@ -24,6 +24,9 @@
 #include "hud.h"
 #include "../common/fpsvita_common.h"
 #include "compat.h"
+#include "panelauto.h"
+#include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/sysmem.h>
 
 using namespace paf;
 
@@ -129,11 +132,11 @@ void Impose::ReadTitleId()
 static char s_readBuf[FPSVITA_STATE_BUF];
 static char s_rebuilt[FPSVITA_STATE_BUF];
 
-/* Whole file into s_readBuf. Bytes read; -1 missing or empty; -2 when it
+/* One file into s_readBuf. Bytes read; -1 missing or empty; -2 when it
  * does not fit, in which case the caller must not rewrite it: rewriting from
  * a partial read with O_TRUNC is how a 2433-byte file once became 1530
  * bytes, silently destroying per-game overrides. */
-static int readWhole(const char *path)
+static int readWholeFile(const char *path)
 {
 	SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
 	if (fd < 0)
@@ -148,15 +151,45 @@ static int readWhole(const char *path)
 	return bytes;
 }
 
+/* The main file, or the last complete copy when a save was interrupted
+ * between the rename of the old file to .bak and the rename of the new
+ * temporary file into place. */
+static int readWhole(const char *path)
+{
+	int bytes = readWholeFile(path);
+	if (bytes != -1)
+		return bytes;
+	char bak[64];
+	sce_paf_snprintf(bak, sizeof(bak), "%s.bak", path);
+	return readWholeFile(bak);
+}
+
+/* Write a complete file through <path>.tmp, keep the previous version as
+ * <path>.bak, then rename the temporary file into place. A short write or a
+ * failed rename leaves the original untouched. */
 static bool writeWhole(const char *path, const char *data, int len)
 {
+	char tmp[64], bak[64];
 	sceIoMkdir(FPSVITA_STATE_DIR, 0777);
-	SceUID fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+	sce_paf_snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+	sce_paf_snprintf(bak, sizeof(bak), "%s.bak", path);
+	SceUID fd = sceIoOpen(tmp, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
 	if (fd < 0)
 		return false;
-	if (len > 0)
-		sceIoWrite(fd, data, len);
+	int wrote = len > 0 ? (int)sceIoWrite(fd, data, len) : 0;
 	sceIoClose(fd);
+	if (wrote != len) {
+		sceIoRemove(tmp);
+		return false;
+	}
+	sceIoRemove(bak);
+	bool hadOld = sceIoRename(path, bak) == 0;
+	if (sceIoRename(tmp, path) < 0) {
+		if (hadOld)
+			sceIoRename(bak, path);
+		sceIoRemove(tmp);
+		return false;
+	}
 	return true;
 }
 
@@ -171,10 +204,10 @@ static void writeConfigFile(int32_t interval, int32_t inject, int32_t autodetect
 	int len = sce_paf_snprintf(buf, sizeof(buf),
 	                            "limit=%d\nvsync=%s\nhud=%d\nhudpos=%d\n"
 	                            "lowlat=%d\nantilag=%d\nlimiter=%d\ntearing=%d\nlog=%d\n"
-	                            "experimental=%d\ntips=%d\n",
+	                            "panelmodes=%d\npanelauto=%d\ntips=%d\nsyscon=%d\n",
 	                            interval, vsync, g_hudMode, g_hudPos,
 	                            g_lowLatency, g_jit ? 1 : 0, g_softcap, g_tear, g_rateLog,
-	                            g_experimental, g_tips);
+	                            g_panelModes, g_panelAuto, g_tips, g_syscon);
 	if (len > 0 && len < (int)sizeof(buf))
 		writeWhole(FPSVITA_CONFIG_FILE, buf, len);
 }
@@ -220,9 +253,9 @@ void Impose::PersistState()
 	writeConfigFile(g_globalInterval, currentInject, autodetect);
 }
 
-/* Per-game keys with no quick-menu UI (",read=peek", and ",panel=<hz>" unless
- * the FPS row owns it): carried over verbatim when the user saves the other
- * options. */
+/* Per-game keys with no quick-menu UI (",read=peek", ",vsync=", and
+ * ",panel=<hz>" unless the FPS row owns it): carried over verbatim when the
+ * user saves the other options. */
 static void lineExtraKeys(const char *p, int len, char *out, int outsize, bool keepPanel)
 {
 	int o = 0;
@@ -231,6 +264,11 @@ static void lineExtraKeys(const char *p, int len, char *out, int outsize, bool k
 		int take = 0;
 		if (i + 10 <= len && sce_paf_strncmp(p + i, ",read=peek", 10) == 0)
 			take = 10;
+		else if (i + 7 < len && sce_paf_strncmp(p + i, ",vsync=", 7) == 0) {
+			take = 7;
+			while (i + take < len && p[i + take] != ',' && p[i + take] != '\n')
+				take++;
+		}
 		else if (i + 7 < len && sce_paf_strncmp(p + i, ",panel=", 7) == 0) {
 			take = 7;
 			while (i + take < len && p[i + take] >= '0' && p[i + take] <= '9')
@@ -401,9 +439,15 @@ bool readGlobals(int32_t *interval, int32_t *inject, int32_t *autodetect,
 			else if (klen == 3 && sce_paf_strncmp(p, "log", 3) == 0)
 				g_rateLog = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 			else if (klen == 12 && sce_paf_strncmp(p, "experimental", 12) == 0)
-				g_experimental = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
+				g_panelModes = sce_paf_strtol(val, NULL, 10) ? 1 : 0;   /* pre-0.4 name */
+			else if (klen == 10 && sce_paf_strncmp(p, "panelmodes", 10) == 0)
+				g_panelModes = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
+			else if (klen == 9 && sce_paf_strncmp(p, "panelauto", 9) == 0)
+				g_panelAuto = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 			else if (klen == 4 && sce_paf_strncmp(p, "tips", 4) == 0)
 				g_tips = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
+			else if (klen == 6 && sce_paf_strncmp(p, "syscon", 6) == 0)
+				g_syscon = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 		}
 		if (*eol != '\n') break;
 		p = eol + 1;
@@ -527,7 +571,7 @@ void Impose::CycleMode(int32_t dir)
 		FpsvitaState st;
 		fpsvitaSetPanel(m.panel);
 		st.panel_hz = 0;
-		fpsvitaGetState(&st);
+		fpsvitaGetState(&st, sizeof(st));
 		obj->currentPanel = st.panel_hz;
 	}
 
@@ -615,6 +659,28 @@ void Impose::JitCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *userd
 	obj->ApplyAdvanced();
 }
 
+/* Panel row: both boxes are globals, persisted at once. Modes adds the
+ * refresh-rate entries to the FPS row (rebuilt here so the row follows
+ * without a menu close); Auto hands the rate to the governor, which needs
+ * the stats push even with the overlay off (Hud::Apply). */
+void Impose::PanelCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *userdata)
+{
+	Impose *obj = (Impose *)userdata;
+	g_panelModes = !g_panelModes;
+	obj->PersistState();
+	obj->BuildModes();
+	obj->UpdateModeLabel();
+	obj->UpdateWarning();
+}
+
+void Impose::PanelAutoCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *userdata)
+{
+	Impose *obj = (Impose *)userdata;
+	g_panelAuto = !g_panelAuto;
+	obj->PersistState();
+	Hud::Apply();
+}
+
 void Impose::SoftcapDownCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *userdata)
 { ((Impose *)userdata)->CycleSoftcap(-1); }
 void Impose::SoftcapUpCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *userdata)
@@ -658,7 +724,15 @@ void Impose::InjectCBFun(int32_t type, ui::Handler *self,
 	obj->currentInject = (obj->currentInject == FPSVITA_INJECT_ON) ? FPSVITA_INJECT_OFF
 	                                                               : FPSVITA_INJECT_ON;
 	fpsvitaSetInject(obj->currentInject);
-	obj->PersistState();   /* Vsync is a global: config.txt, also with a game running */
+	g_globalInject = obj->currentInject;
+	if (!obj->hasGame) {
+		g_globalAutodetect = obj->autodetect;
+		obj->PersistState();
+	} else {
+		/* A per-game vsync= may have forced the kernel while the global is
+		 * auto; write the stored globals, not the per-game kernel value. */
+		writeConfigFile(g_globalInterval, g_globalInject, g_globalAutodetect);
+	}
 }
 
 void Impose::SaveCBFun(int32_t type, ui::Handler *self,
@@ -734,6 +808,10 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	 */
 	if (!hasGame && fpsvitaGetInterval() != g_globalInterval)
 		fpsvitaSetInterval(g_globalInterval);
+	if (!hasGame && fpsvitaGetInject() != g_globalInject)
+		fpsvitaSetInject(g_globalInject);
+	if (!hasGame && fpsvitaGetAutodetect() != g_globalAutodetect)
+		fpsvitaSetAutodetect(g_globalAutodetect);
 	if (!hasGame)
 		fpsvitaSetAdvanced((g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | fpsvitaJitFlags(g_jit)
 		                   | (g_tear ? FPSVITA_ADV_TEAR : 0), g_softcap);
@@ -746,11 +824,23 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	if (hasGame) {
 		/* What the helper put in force for this title. */
 		FpsvitaState st;
-		st.adv_flags = 0; st.softcap = 0; st.panel_hz = 0;
-		fpsvitaGetState(&st);
+		sce_paf_memset(&st, 0, sizeof(st));
+		fpsvitaGetState(&st, sizeof(st));
 		this->advFlags = st.adv_flags;
 		this->softcap = st.softcap;
 		this->currentPanel = st.panel_hz;
+		/* Panel auto in charge: the row shows, and Save writes, the user's
+		 * own pick, not the step the governor happens to be at. */
+		{
+			int32_t ui, up;
+			if (PanelAuto::UserPick(&ui, &up)) {
+				this->currentInterval = ui;
+				this->currentPanel = up;
+			}
+		}
+		/* The overlay's NOT HOOKED, next to the box where it gets ticked. */
+		this->llNotHooked = (st.adv_flags & FPSVITA_ADV_LOWLAT) && st.stats.fps_x10
+		                 && !(st.stats.flags & FPSVITA_STATF_GXM_INIT);
 	} else {
 		this->advFlags = (g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | fpsvitaJitFlags(g_jit)
 		               | (g_tear ? FPSVITA_ADV_TEAR : 0);
@@ -816,6 +906,10 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	/* Third row: latency options */
 	this->llBox = (ui::CheckBox *)this->root->FindChild(IDParam("fc_check_lowlat"), 0);
 	this->jitBox = (ui::CheckBox *)this->root->FindChild(IDParam("fc_check_jit"), 0);
+	/* Fourth row: panel modes. Optional widgets (an older RCO lacks them). */
+	ui::CheckBox *panelBox = (ui::CheckBox *)this->root->FindChild(IDParam("fc_check_panel"), 0);
+	ui::CheckBox *panelAutoBox = (ui::CheckBox *)this->root->FindChild(IDParam("fc_check_panel_auto"), 0);
+	ui::Widget *panelGroup = this->root->FindChild(IDParam("fc_group_impose_panel"), 0);
 	this->softcapText = (ui::Text *)this->root->FindChild(IDParam("fc_text_softcap_value"), 0);
 	ui::Widget *scDown = this->root->FindChild(IDParam("fc_button_softcap_down"), 0);
 	ui::Widget *scUp = this->root->FindChild(IDParam("fc_button_softcap_up"), 0);
@@ -844,7 +938,29 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	UpdateInjectState();
 	UpdateHudLabels();
 	llBox->SetCheck((advFlags & FPSVITA_ADV_LOWLAT) != 0);
+	{
+		/* (!) after the Lowlat label, the FPS row's mark, when the title
+		 * cannot be reached (the overlay's NOT HOOKED). Optional widget. */
+		ui::Text *llWarn = (ui::Text *)this->root->FindChild(IDParam("fc_text_lowlat_warn"), 0);
+		if (llWarn) {
+			textSet(llWarn, L"(!)");
+			if (hasGame && llNotHooked)
+				widgetShow(llWarn);
+			else
+				widgetHide(llWarn);
+		}
+	}
 	jitBox->SetCheck((advFlags & FPSVITA_ADV_JIT) != 0);
+	if (panelGroup && sceKernelIsPSVitaTV())
+		widgetHide(panelGroup);   /* no panel on a PS TV */
+	if (panelBox) {
+		panelBox->SetCheck(g_panelModes != 0);
+		panelBox->AddEventCallback(ui::Button::CB_BTN_DECIDE, PanelCBFun, this);
+	}
+	if (panelAutoBox) {
+		panelAutoBox->SetCheck(g_panelAuto != 0);
+		panelAutoBox->AddEventCallback(ui::Button::CB_BTN_DECIDE, PanelAutoCBFun, this);
+	}
 	UpdateSoftcapLabel();
 
 	/* Show save button only when a game is running */

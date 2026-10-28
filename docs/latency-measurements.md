@@ -191,8 +191,13 @@ rate after resume; with that, the rate came back at 40 Hz and the home screen st
 
 ## Ideas examined and not built
 
-- **Adaptive vsync** (flip without waiting when a frame is late): few frames miss by a small
-  margin. On hold.
+- **Adaptive vsync / late tear** (flip without waiting when a frame is late): tested on
+  2026-10-25 with the dev late-tear bit on Resogun and Killzone at a 60 limit. It did not
+  raise fps (Resogun stayed at 36 to 39, Killzone at 31 to 59 depending on the scene), the
+  present histogram moved toward the longer buckets, and tearing was visible. INPUT stayed
+  within noise (Resogun 55 to 58 ms off vs 56 to 59 ms on; Killzone 20 to 53 ms off vs 19 to
+  53 ms on). Both titles ran with `inject=0`, so the helper's own inject wait was already
+  absent; the test changed only the flip. Not promoted.
 - **The firmware's own 48 and 50 Hz output modes**: switching mode reached about 47.8 Hz
   only after a sleep and resume, and one mode blanked the panel until a reboot. The timing
   patch above replaced this.

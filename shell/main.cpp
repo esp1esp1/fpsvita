@@ -43,6 +43,23 @@
 /* Minimal kubridge exception API (kubridge.h clashes with the paf_compat
  * sysmem types, so declare just what is used). Layout per kubridge.h. */
 extern "C" {
+/* SceAppMgrAppStatus from vdsuite/user/appmgr.h (0x80 bytes); only
+ * isActive is read. SceAppMgr_stub exports the NID. */
+typedef struct SceAppMgrAppStatus {
+	unsigned int unk_0;
+	unsigned int launchMode;
+	unsigned int bgm_priority_or_status;
+	char appName[32];
+	unsigned int unk_2C;
+	int appId;
+	int processId;
+	int isShellProcess;
+	int isActive;
+	unsigned int unk_40, unk_44, appAttrib, unk_4C, unk_50, unk_54, unk_58;
+	unsigned int unk_5C, unk_60, unk_64, unk_68, unk_6C, unk_70, unk_74;
+	unsigned int unk_78, unk_7C;
+} SceAppMgrAppStatus;
+int sceAppMgrGetStatusByName(const char *name, SceAppMgrAppStatus *status);
 typedef struct KuKernelExceptionContext {
 	SceUInt32 r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12;
 	SceUInt32 sp, lr, pc;
@@ -98,6 +115,8 @@ void dbg_hex(const char *tag, uint32_t val)
 Plugin *g_fpsvitaPlugin = NULL;
 ui::ScrollView *g_imposeRoot = NULL;
 int32_t g_globalInterval = FPSVITA_INTERVAL_OFF;
+int32_t g_globalInject = FPSVITA_INJECT_OFF;
+int32_t g_globalAutodetect = FPSVITA_AUTODETECT_ON;
 int32_t g_hudMode = FPSVITA_HUD_OFF;
 int32_t g_hudPos = 0;
 int32_t g_lowLatency = 0;
@@ -105,7 +124,9 @@ int32_t g_jit = 1;   /* fresh install: Antilag on */
 int32_t g_softcap = 0;
 int32_t g_tear = 0;
 int32_t g_rateLog = 0;
-int32_t g_experimental = 0;
+int32_t g_syscon = 1;
+int32_t g_panelModes = 0;
+int32_t g_panelAuto = 0;
 int32_t g_tips = 1;
 
 bool fpsvitaPanelUi(void)
@@ -113,7 +134,7 @@ bool fpsvitaPanelUi(void)
 	static int tv = -1;
 	if (tv < 0)
 		tv = sceKernelIsPSVitaTV() ? 1 : 0;
-	return g_experimental && !tv;
+	return g_panelModes && !tv;
 }
 static Framework *s_fwkInstance = NULL; /* cached during stage 1 */
 
@@ -338,11 +359,22 @@ static void coreInitPlugin()
 static tai_hook_ref_t s_hookRef[2];
 static SceUID s_hookId[2] = { -1, -1 };
 
+/* The PSP emulator's Vita title (FPSVITA_ADRENALINE_TITLEID): fpsvita has
+ * no hooks there yet, so the quick-menu rows would offer settings that do
+ * nothing. */
+static bool adrenalineActive(void)
+{
+	SceAppMgrAppStatus st = {};
+	if (sceAppMgrGetStatusByName(FPSVITA_ADRENALINE_TITLEID, &st) < 0)
+		return false;
+	return st.isActive != 0;
+}
+
 static bool supportsWiredEthernet_patched()
 {
 	if (!g_imposeRoot)
 		coreInitImpose();
-	if (g_imposeRoot)
+	if (g_imposeRoot && !adrenalineActive())
 		coreSetImpose(true);
 	return TAI_NEXT(supportsWiredEthernet_patched, s_hookRef[1]);
 }
@@ -387,6 +419,8 @@ static SceInt32 sceAVConfigRegisterCallback_patched(SceUID cbid, SceInt32 a2)
 	        autodetect = FPSVITA_AUTODETECT_ON, hud = FPSVITA_HUD_OFF, hudpos = 0;
 	bool haveConfig = fpsvita::readGlobals(&interval, &inject, &autodetect, &hud, &hudpos);
 	g_globalInterval = interval;
+	g_globalInject = inject;
+	g_globalAutodetect = autodetect;
 	fpsvitaSetInterval(interval);
 	fpsvitaSetInject(inject);
 	fpsvitaSetAutodetect(autodetect);

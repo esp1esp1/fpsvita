@@ -1,5 +1,71 @@
 # Changelog
 
+## v0.4.0 (2026-10-28)
+
+### Added
+
+- **Antilag delivers button presses from the controller chip.** The system samples the
+  controller once per refresh; the chip's own word is read at 1 kHz by the kernel module and
+  a press is handed to the game about 10 ms earlier at 60 Hz (up to a refresh, and up to 25 ms
+  at a 40 Hz panel). Presses only; releases, sticks and touch keep the normal sampling. INPUT
+  counts such presses from the chip's change time, and the ANTI-LAG row shows the average
+  gain as `BTN -9.6`. `syscon=0` in `config.txt` turns the part off. Not in the lite build.
+- **Panel row in the quick menu**, under Latency. `Modes` (`panelmodes=1`) adds the 50Hz, 45Hz
+  and 40Hz entries to the FPS row; it replaces `experimental=1`, which still reads as on.
+  `Auto` (`panelauto=1`) keeps the game at the highest step it holds: 60, 50, 45 or 40 Hz
+  with one frame per refresh, or a 30fps limit at the normal refresh as the floor, with the
+  FPS row's pick as the ceiling. It checks every 2 seconds, drops after two bad checks (a
+  level load does not count) to the highest step the game could clear, and tries the next
+  step up after a clean streak, backing off per step when a try fails and returning to the
+  step it left. It runs at 60fps or at Default on a 60-native game, not on speed-tied titles,
+  and with the overlay off. LIMIT reads `AUTO 45 @45HZ` (Mini: `AUTO 45`) while it is in
+  charge; LAST ignores its switches; the FPS row and Save show and store your own pick.
+  Slim units are offered the modes.
+- **MISS row** on the Full overlay: the share of the last 5 seconds' frames that took about
+  twice the target period, and the 1% low of the last 512 frames. The target is the limit, the
+  Limiter under Uncapped, or the game's own rate under Default.
+- Lowlat applies on more vitaGL ports, which initialise GXM through `sceGxmVshInitialize`;
+  both entry points are hooked. Those ports run triple-buffered by default, so a saved or
+  global `lowlat=1` takes effect there from this version. The PowerVR GLES stack (the Godot
+  and LÖVE ports) is measured: its swap call is hooked as the submit, so CPU, INPUT and QUEUE
+  read there, and Lowlat reads `ON (GAME'S OWN)` because the stack already runs one frame in
+  flight.
+- `(!)` after Lowlat in the quick menu, `NOT HOOKED` on the overlay and `LL-` in Mini when a
+  title sets up its graphics where Lowlat cannot reach. `RESTART GAME` now means the tick
+  came after the game started.
+- `tools/scan_eboot.py` lists a homebrew eboot's hookable imports; `tools/dump_regs.py` reads
+  a crash dump. The rate line gains `low1=`, the start line `init=`, and
+  `tools/ingest_playlog.py` records both plus a `gl` column for vitaGL titles.
+
+### Changed
+
+- **Mini is one small line**: FPS, frame time, 1% low, CPU, INPUT, QUEUE, the limit and the
+  active flags, right-aligned in the right corners.
+- **Fewer tips.** TIP stays blank for 10 seconds after a launch or change, a rule must hold
+  on every update over 5 seconds before it fires, nothing is shown when there is nothing to
+  say, and the limit tips stand down while Auto is in charge.
+- The quick menu's `<` buttons and values moved right to line up with the Latency boxes, and
+  the HUD `>` shares a column with the Antilag box.
+- The helper never hooks a module mapped in the system's shared region (an export hook on
+  SceGxm patched the one copy every process shares, took SceShell down, and outlived the
+  process), and only walks the game's own modules for late hooks.
+
+- The quick menu hides the fpsvita rows while Adrenaline (`PSPEMUCFW`) is active: the helper
+  skips the PSP emulator process, so the rows had nothing to act on.
+- `Save` writes `config.txt` and `state.txt` through a temporary file, keeps the previous
+  version as `.bak`, and reads `.bak` when the main file is missing. A short write or a failed
+  rename leaves the original file intact.
+- `helper.log` rotates to `helper.log.1` at a helper start once it passes 256 KB, and
+  `tools/ingest_playlog.py` reads and clears both files.
+- `fpsvitaGetState` now takes the caller's struct size and copies only that prefix, so a
+  module built against a different `FpsvitaState` cannot overrun the caller's stack.
+- When panel mode is active, `sceDisplayGetRefreshRate` reports the granted rate instead of
+  59.94, so a game that computes its frame time from the reported refresh uses the real rate.
+- Per-game `vsync=auto|0|1` on a `state.txt` line overrides the global Vsync for that title;
+  `Save` keeps the key.
+- Titles the compatibility list marks `NO INPUT ABOVE 59` get `read=peek` automatically;
+  the hand-written `read=peek` key remains for titles the list does not know.
+
 ## v0.3.1 (2026-10-24)
 
 ### Added

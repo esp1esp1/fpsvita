@@ -10,6 +10,7 @@ add_executable(fpsvita-ui
   main.cpp
   impose.cpp
   hud.cpp
+  panelauto.cpp
   scepafre_shim.cpp
 )
 

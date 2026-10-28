@@ -89,7 +89,7 @@ Hold the PS button to open the quick menu. fpsvita adds three rows:
 
 | Control | Values | Takes effect |
 |---|---|---|
-| FPS | Default, 60fps, 30fps, 20fps, Uncapped, Tearing. With `experimental=1` and a game running, also 50Hz, 45Hz and 40Hz after 60fps ([Panel refresh](#panel-refresh-experimental)) | At once |
+| FPS | Default, 60fps, 30fps, 20fps, Uncapped, Tearing. With Panel Modes ticked and a game running, also 50Hz, 45Hz and 40Hz after 60fps ([Panel refresh](#panel-refresh)) | At once |
 | `(!)` | Shown when the [compatibility list](compatibility-list.md#probably-incompatible) names a problem for this game at the selected limit. A limit equal to the game's own rate counts as safe. Never shown with `tips=0`. | |
 | Limiter | off, 20, 24, 25, 30, 40, 45, 50, 60 | At once, only at Uncapped |
 | HUD | Off, Mini, Full | At once |
@@ -98,6 +98,8 @@ Hold the PS button to open the quick menu. fpsvita adds three rows:
 | Antilag | Ticked or not | At once |
 | Vsync | Ticked or not. Shown only when Vsync is forced in `config.txt` | At once, saved at once |
 | Save | Shown only while a game runs | |
+| Panel: Modes | Ticked or not: the FPS row's 50Hz, 45Hz and 40Hz entries ([Panel refresh](#panel-refresh)). Not on a PS TV | At once, saved at once |
+| Panel: Auto | Ticked or not: fpsvita picks the rate the game holds ([Auto](#auto)) | At once, saved at once |
 
 ### With a game running
 
@@ -114,7 +116,7 @@ Every change is the global default and is saved at once. The Save button is hidd
 defaults apply to every game that has no profile of its own, and to any option a profile
 leaves out.
 
-HUD, Corner and Vsync are always global and always saved at once.
+HUD, Corner, Vsync and the Panel row are always global and always saved at once.
 
 ## Options
 
@@ -162,11 +164,19 @@ active.
 
 ### Antilag
 
-Antilag is on or off, and on by default. It has two parts: the fresh poll, which works at
-any limit, and a sleep that only runs at a 30 or 20 limit.
+Antilag is on or off, and on by default. It has three parts: button presses straight from
+the syscon, the fresh poll, which works at any limit, and a sleep that only runs at a 30 or
+20 limit.
 
 **What it does.**
 
+- *Syscon presses.* The system samples the controller once per refresh, but the button chip
+  reports far more often. On every read, fpsvita adds the buttons the chip says are down to
+  the sample the game gets, so a press reaches the game about 10 ms sooner at 60 Hz (up to a
+  whole refresh, 17 ms; up to 25 ms at a 40 Hz [panel refresh](#panel-refresh)).
+  Presses only; releases, sticks and touch keep the normal sampling. INPUT counts these
+  presses from the moment the chip saw them. `syscon=0` in `config.txt` turns this part off.
+  Not in the lite build, which has no kernel module to read the chip.
 - *Fresh poll.* When the sample the game just read is nearly a refresh old, the next one
   lands within about 2 ms. fpsvita reads again for up to 2.5 ms and hands the game the new
   sample.
@@ -257,16 +267,16 @@ completed 563 times a second with Tearing, against 43 with normal flips.
 immediate flips fail, fpsvita falls back to normal flips and the overlay shows
 `TEARING (NO KERNEL)`.
 
-### Panel refresh (experimental)
+### Panel refresh
 
-**What it does.** Runs the screen at a lower refresh rate while one game runs. It is off
-unless `config.txt` has `experimental=1` (then reboot). With it on and a game running, the FPS
+**What it does.** Runs the screen at a lower refresh rate while one game runs. Tick **Modes**
+on the quick menu's Panel row (`panelmodes=1`). With it on and a game running, the FPS
 row gains `50Hz`, `45Hz` and `40Hz` after `60fps`: each is a 60fps limit at that refresh, an
 even 50, 45 or 40 fps with one frame per refresh, applied at once. Save stores it as
 `,panel=<hz>` on the game's [state.txt](#statetxt) line; any other rate from 24 to 59 Hz can be
 written there by hand. The limits count in the new refreshes: at `panel=40` the `60fps` limit
 is 40 fps and `30fps` is 20. The normal 59.94 Hz returns when you pick another FPS entry, when
-the game exits or when another one starts. With `experimental=0` (the default) fpsvita ignores
+the game exits or when another one starts. With Modes off (the default) fpsvita ignores
 `panel=` lines.
 
 **When it helps.** A game that cannot hold 60 but runs well above 30, where the Limiter's
@@ -295,12 +305,34 @@ It suits poorly:
 
 **What it costs.** The controller is sampled once per refresh, so input latency rises:
 Doom64EX at 40 Hz measured about 61 ms from input to screen, against about 34 ms at 60.
+[Antilag](#antilag)'s syscon presses take most of that back for button presses, which reach
+the game from the chip's own report rather than the refresh-locked sample.
+
+### Auto
+
+Tick **Auto** on the Panel row (`panelauto=1`) and fpsvita keeps the game at the highest step
+it holds, the way some Switch homebrew fakes a variable refresh rate: 60, 50, 45 or 40 Hz with
+one frame per refresh, or a 30fps limit at the normal refresh as the floor (steady 33 ms
+frames with input still sampled 60 times a second; never 20). What you pick in the FPS row is
+the ceiling: at `45Hz`, Auto ranges from 30 up to 45. It runs while the FPS row is at `60fps` or one of the refresh-rate entries, or at
+`Default` on a game whose own rate is 60 (`OG:60` on the overlay), with Modes on, on a game
+the [compatibility list](compatibility-list.md) does not mark speed-tied. A 30fps or 20fps
+limit, Uncapped, the Limiter, and Default on a 30-native game leave it idle. Every
+2 seconds it looks at the frame rate and the missed frames: a rate the game runs under 90% of,
+or misses 3% of its frames at, for two checks in a row (so a level load does not count), is
+dropped straight to the highest rate the game could clear (the measured frame rate, with the doubled frames credited back). After 10 seconds clean it tries the next rate up; a try that fails within 8 seconds
+goes back to the rate it came from and doubles the wait before that rate is tried again (up
+to 2 minutes; each rate has its own wait, and a minute clean halves them). From the 30 floor
+the wait is capped at 40 seconds, so a game does not sit at 30 long after its 30 fps menus. The overlay's LIMIT row reads
+`AUTO 45 @45HZ`, or `AUTO 30 @60HZ` at the floor, while it is in charge, and LAST ignores its
+switches. Unticking Auto gives the FPS row's own limit back. While Auto is in charge the
+quick menu's FPS row shows your own pick, and Save stores that, not the step Auto is at. It works with the
+overlay off. Save still stores the rate in force at the time.
 
 **Limits.** Tested on the OLED Vita (PCH-1000), firmware 3.65, including sleep and resume
 while a game runs at a panel rate and switching rates from the quick menu during play. The
-Slim (PCH-2000) drives its LCD with the same timing table: two user reports had it accept
-40 Hz with no flicker and normal game speed, but whether its screen then refreshes at 40 Hz is
-not confirmed yet. If the screen flickers or goes black, pick another FPS entry, quit the game
+Slim (PCH-2000) drives its LCD with the same timing table and users report 40 Hz working
+there with no flicker and normal game speed; it is offered on both. If the screen flickers or goes black, pick another FPS entry, quit the game
 or reboot, and please [report](#reporting-a-game) what you saw. A PS TV has no screen of its
 own: the entries are not offered there, and fpsvita leaves any display it does not recognise
 alone. An entry the console refuses reads `40Hz n/a`. Lite
@@ -325,26 +357,26 @@ runs. Its numbers are smoothed averages, updated about four times a second.
 
 ### Mini
 
-Two lines:
+One small line, the Full rows' numbers in order, then the limit and what is active:
 
 ```
-30 FPS  LIMIT 30 / OG:60
-LL  AL
+30.0  33.3ms  1% 27  CPU 11.1  IN 22.1  Q 8.7  LIMIT 30  LL  AL
 ```
 
-The first line is the frame rate and the limit: `LIMIT 30`, `DEFAULT`, `UNCAPPED`, `TEARING`
-or `TEARING (NO KERNEL)`, followed by `/ OG:60` once the game's own rate is known.
-
-The second line lists what is active:
+Frame rate, time per frame, the 1% low (once 200 frames are in), CPU, INPUT and QUEUE in
+milliseconds (`-` until measured), the limit (`LIMIT 30`, `DEFAULT`, `UNCAPPED`, `TEARING` or
+`TEARING (NO KERNEL)`), then:
 
 | Shown | Meaning |
 |---|---|
 | `VSYNC` | Vsync's wait is active |
 | `LL` | A one-frame queue is in effect, from Lowlat or from the game itself |
 | `LL?` | Lowlat is ticked and applies at the next launch |
+| `LL-` | Lowlat is ticked but this game sets up its graphics where Lowlat cannot reach |
 | `AL` | Antilag is on |
 | `LIM 40` | The Limiter is holding 40 fps |
-| `40HZ` | [Panel refresh](#panel-refresh-experimental) at 40 Hz |
+| `40HZ` | [Panel refresh](#panel-refresh) at 40 Hz |
+| `AUTO 45` | [Auto](#auto) holds the game at 45 Hz (`AUTO 30` at its floor); shown in place of the limit |
 
 ### Full
 
@@ -355,6 +387,7 @@ The second line lists what is active:
 | CPU | CPU time per frame, without time spent waiting for the queue | `11.1 ms` |
 | INPUT | Age of the newest controller sample the frame had, at that frame's flip | `22.1 ms` |
 | QUEUE | Time from submitting the frame to its flip | `8.7 ms` |
+| MISS | Frames that missed their target over the last 5 seconds, and the 1% low | `0.4%  1% LOW 27.1` |
 | ANTI-LAG | Antilag state | see below |
 | LOW LAT | Lowlat state | see below |
 | LIMITER | `40 FPS`, `40 FPS (NEEDS UNCAPPED)` or `OFF` | |
@@ -365,27 +398,40 @@ The second line lists what is active:
 A row shows `-` until it has a measurement. CPU stays `-` on a game that does not submit
 frames through the call fpsvita hooks. INPUT does not include the panel's own response time.
 
+MISS counts presents that took about twice the target period: the limit's, the Limiter's
+under Uncapped, or the game's own rate under Default (`-` under plain Uncapped). It is the
+share of the last 5 seconds' frames. The 1% low is the average rate of the slowest percent of
+the last 512 frames. Together they say whether the game holds the rate, which FPS alone, an
+average, does not: a panel-refresh or Limiter setting is holding when MISS stays near 0
+and the 1% low sits near the rate.
+
 ANTI-LAG reads `OFF`, `ON / 0` (on, not sleeping now) or `16.6 ms / 0` (on, sleeping that
 long each frame). The number counts frames that missed their slot while
-sleeping.
+sleeping. `BTN -9.6` follows once a button press has come from the syscon: how much newer
+than the refresh-locked sample those presses were, on average.
 
 LOW LAT reads `ON`, `OFF`, `ON (GAME'S OWN)` (the game uses a one-frame queue itself),
-`RESTART GAME` (ticked, applies at the next launch) or `ON UNTIL RESTART` (unticked, the queue
-stays short until the game restarts).
+`RESTART GAME` (ticked after the game set up its graphics, applies at the next launch),
+`NOT HOOKED` (ticked, but this game sets up its graphics where Lowlat cannot reach, so a
+restart will not help; the quick menu shows `(!)` after Lowlat for the same title) or
+`ON UNTIL RESTART` (unticked, the queue stays short until the game restarts).
 
 ### TIP
 
-TIP suggests one thing to try. It shows `...` for 3 seconds after a launch or a change, while
-the averages settle. A new tip must hold for 5 seconds before it replaces the one shown. The
+TIP suggests one thing to try, and nothing until it has a baseline: the row stays blank for
+10 seconds after a launch or a change (the averages settle, then 5 seconds of readings are
+gathered), and a rule only fires when its reading held on every update over those 5 seconds.
+A reading that wanders across a rule's threshold produces no tip. A new tip must then hold for
+5 seconds before it replaces the one shown, so the first tip appears about 15 seconds in. The
 first rule that matches wins:
 
 | Order | Tip | When |
 |---|---|---|
-| 1 | `30 NOT HELD, TRY 20` | The game runs under 90% of the limit. At 20 it reads `20 NOT HELD`. With `experimental=1` at a 60fps limit it suggests the highest lower [panel refresh](#panel-refresh-experimental) entry the game runs 15% above, as `NOT HELD, TRY 45HZ`, unless the compatibility list marks the game speed-tied; at a refresh-rate entry with none that fits it reads `40 NOT HELD, TRY 30`. |
+| 1 | `30 NOT HELD, TRY 20` | The game runs under 90% of the limit (never while [Auto](#auto) holds the rate). At 20 it reads `20 NOT HELD`. With Panel Modes on at a 60fps limit it suggests the highest lower [panel refresh](#panel-refresh) entry the game runs 15% above, as `NOT HELD, TRY 45HZ`, unless the compatibility list marks the game speed-tied; at a refresh-rate entry with none that fits it reads `40 NOT HELD, TRY 30`. |
 | 2 | `TRY ANTI-LAG` | Antilag is off, and the sample is 10 ms old or more, or a 30 or 20 limit leaves a refresh of queue time and room for the sleep. |
 | 3 | `TRY LOW LAT` | Lowlat is off and the frame spends 80% of its time in the queue. |
 | 4 | A known problem | The [compatibility list](compatibility-list.md#probably-incompatible) names one for this game at this limit, and the limit is not the game's own rate. |
-| 5 | `NONE` | Nothing to suggest. |
+| 5 | blank | Nothing to suggest. |
 
 The known problems read: `NO INPUT ABOVE 59`, `FREEZES, USE DEFAULT`, `SHIP SHAKES WITH CAP`,
 `VIDEOS BREAK AT 60`, `MENUS RUN FAST`, `SLOW MOTION AT 20` and `SPEED TIED TO FPS`.
@@ -444,8 +490,10 @@ stutter stays, untick Antilag for that game and Save.
 The game needed the second queue slot. Turn Lowlat off, or use a lower limit.
 
 **LOW LAT still shows `RESTART GAME` after a restart.**
-If LAST reads `LOW LAT: NOT SAVED`, press Save and relaunch. Otherwise the game sets up its
-graphics in a way Lowlat cannot reach.
+If LAST reads `LOW LAT: NOT SAVED`, press Save and relaunch.
+
+**LOW LAT shows `NOT HOOKED`.**
+The game sets up its graphics in a way Lowlat cannot reach. Untick Lowlat for that game.
 
 **No input at 60fps or Uncapped (Killzone: Mercenary).**
 Add `,read=peek` to the game's line in [state.txt](#statetxt).
@@ -491,17 +539,19 @@ default:
 | `limiter` | `0` off, or 10 to 120 fps | `0` |
 | `tearing` | `0`, `1` (with `limit=0`) | `0` |
 | `log` | `0`, `1`: write rate lines to `helper.log` (see [collecting play logs](#collecting-play-logs)) | `0` |
-| `experimental` | `0`, `1`: the [panel refresh](#panel-refresh-experimental) entries and tip, and `panel=` lines | `0` |
+| `syscon` | `1`, `0`: [Antilag](#antilag)'s syscon presses | `1` |
+| `panelmodes` | `0`, `1`: the [panel refresh](#panel-refresh) entries and tip, and `panel=` lines (the Panel row's Modes box; `experimental=1` from earlier versions reads as `1`) | `0` |
+| `panelauto` | `0`, `1`: [Auto](#auto) panel refresh (the Panel row's Auto box) | `0` |
 | `tips` | `1`, `0`: the overlay's [TIP](#tip) row and the quick menu's `(!)` | `1` |
 
-`log`, `experimental` and `tips` have no quick-menu control; edit the file and reboot.
+`log`, `syscon` and `tips` have no quick-menu control; edit the file and reboot.
 
 ### state.txt
 
 One line per game, written by Save:
 
 ```
-TITLEID=<limit>,lowlat=<0|1>,antilag=<0|1>,limiter=<fps>,tearing=<0|1>
+TITLEID=<limit>,lowlat=<0|1>,antilag=<0|1>,limiter=<fps>,tearing=<0|1>[,vsync=<auto|0|1>]
 ```
 
 For example, Metal Gear Solid 2 HD at its own 30 with Antilag on:
@@ -513,16 +563,23 @@ PCSE00078=2,lowlat=0,antilag=1,limiter=0,tearing=0
 The limit uses the same numbers as `limit=` in `config.txt`. A key missing from the line
 falls back to the global setting.
 
-`read=peek` has no quick-menu control. Add it by hand to the end of a game's line. It turns
-the game's blocking controller reads into non-blocking ones, which Killzone: Mercenary needs
-above 59 fps. Save keeps it.
+`vsync=auto|0|1` overrides the global Vsync for this game: `auto` detects, `0` forces it
+off and `1` forces it on. It has no quick-menu control; add it by hand. Save keeps it. The
+helper applies it at the game's first display hook and restores the global setting when the
+game exits; a killed game's value stays in the kernel until the next launch or the home-screen
+quick menu.
+
+`read=peek` has no quick-menu control. Titles the compatibility list marks `NO INPUT ABOVE
+59` get it automatically; for other titles add it by hand to the end of the line. It turns the
+game's blocking controller reads into non-blocking ones, which Killzone: Mercenary needs above
+59 fps. Save keeps it.
 
 ```
 PCSA00107=1,lowlat=0,antilag=1,limiter=0,tearing=0,read=peek
 ```
 
 `panel=<hz>` (24 to 59) is written by Save from the FPS row's refresh-rate entries when
-`experimental=1`, and can be added by hand; see [Panel refresh](#panel-refresh-experimental).
+Panel Modes is on, and can be added by hand; see [Panel refresh](#panel-refresh).
 
 `state.txt` can hold up to 4 KB.
 
@@ -574,5 +631,6 @@ settings in force. To collect them:
 6. Set `log=0` and reboot when you are done. Each rate line is a few-millisecond write to the
    memory card from the game's display thread.
 
-`helper.log` also gets a few lines at every game launch and grows until something deletes it.
-Delete it whenever you like.
+`helper.log` also gets a few lines at every game launch. At a helper start it rotates to
+`helper.log.1` once it passes 256 KB; `tools/ingest_playlog.py` reads and clears both. Delete
+them whenever you like.

@@ -18,7 +18,7 @@
       <textobj font_size="19" max_line_count="1" font_color="1, 1, 1, 1" id="textobj1" />
     </style_text>
     <style_text textobj="textobj1" id="fc_style_text_hud_green">
-      <textobj font_size="19" max_line_count="1" font_color="0, 1, 0, 1" id="textobj1" />
+      <textobj font_size="15" max_line_count="1" font_color="0, 1, 0, 1" id="textobj1" />
     </style_text>
     <!-- Row icon, drawn like PSVshellPlus's: a white PNG scaled to the row. -->
     <style_plane color="1, 1, 1, 1" id="fc_style_plane_icon" planeobj="planeobj1">
@@ -29,16 +29,16 @@
   <templatetable>
     <!--
       Overlay, opened once into fc_page_hud (shell/hud.cpp). The root plane is
-      moved for the four positions and faded as a whole. Mini shows the two
-      green lines; Full shows the box with its label/value rows. Layout and
-      style follow PSVshellPlus's HUD: 26 px per row, uppercase labels.
+      moved for the four positions and faded as a whole. Mini shows the one
+      small green line; Full shows the box with its label/value rows. Layout
+      and style follow PSVshellPlus's HUD: 26 px per row, uppercase labels.
     -->
     <template id="fc_template_hud">
       <plane style="_common_style_plane_transparent" id="fc_plane_hud_root">
-        <layout_hint size="350, 302" pos="10, -10" anchor="1, 2" align="1, 2" />
+        <layout_hint size="350, 328" pos="10, -10" anchor="1, 2" align="1, 2" />
         <!-- Full: PSVshellPlus-style dialog box, labels left, values right -->
         <plane style="_common_style_plane_transparent" id="fc_plane_hud_box">
-          <layout_hint size="350, 302" pos="0, 0" anchor="1, 2" align="1, 2" />
+          <layout_hint size="350, 328" pos="0, 0" anchor="1, 2" align="1, 2" />
           <plane id="fc_plane_hud_frame" texture="_common_texture_dialog_frame">
             <layout_hint adjust="1, 1" />
           </plane>
@@ -111,13 +111,22 @@
         <text style="fc_style_text_hud" id="fc_text_hud_v10">
           <layout_hint pos="-10, -268" adjust="2, 2" anchor="2, 2" align="2, 2" />
         </text>
-        </plane>
-        <!-- Mini: two green lines, no box, like PSVshellPlus's micro view -->
-        <text style="fc_style_text_hud_green" id="fc_text_hud_mini0">
-          <layout_hint pos="10, -8" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        <text style="fc_style_text_hud" id="fc_text_hud_l11">
+          <layout_hint pos="10, -294" adjust="2, 2" anchor="1, 2" align="1, 2" />
         </text>
-        <text style="fc_style_text_hud_green" id="fc_text_hud_mini1">
-          <layout_hint pos="10, -34" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        <text style="fc_style_text_hud" id="fc_text_hud_v11">
+          <layout_hint pos="-10, -294" adjust="2, 2" anchor="2, 2" align="2, 2" />
+        </text>
+        </plane>
+        <!-- Mini: one small green line, no box, like PSVshellPlus's micro view.
+             Two copies: left-anchored for the left corners, right-anchored for
+             the right ones, so the line ends at the screen edge whatever its
+             length (hud.cpp shows one and writes both). -->
+        <text style="fc_style_text_hud_green" id="fc_text_hud_mini">
+          <layout_hint pos="10, -4" adjust="2, 2" anchor="1, 2" align="1, 2" />
+        </text>
+        <text style="fc_style_text_hud_green" id="fc_text_hud_mini_r">
+          <layout_hint pos="-10, -4" adjust="2, 2" anchor="2, 2" align="2, 2" />
         </text>
       </plane>
     </template>
@@ -127,10 +136,13 @@
         [icon] FPS:  [<] 30fps (og:60) [>]           Limiter: [<] off [>]
                HUD:  [<] Full [>]                     Corner: [<] BL [>]
            Latency:  [x] Lowlat  [x] Antilag        Vsync [x]    [Save]
+             Panel:  [x] Modes   [x] Auto
 
       Column grid as PSVshellPlus's rows: label at x=44, down button at
-      130, value at 198. Right-hand controls are anchored to the right
-      edge (anchor 2), where the system puts its own; the Limiter's
+      164 (the Lowlat checkbox's column), value at 232; the HUD row's up
+      button and the Antilag checkbox share 334, which leaves room for the
+      Lowlat label's (!) at 296. Right-hand controls are anchored to the
+      right edge (anchor 2), where the system puts its own; the Limiter's
       buttons share the HUD corner's column. Save sits bottom right, the
       usual place for a confirm button.
     -->
@@ -152,12 +164,12 @@
         <!-- Left arrow button -->
         <button style="_common_default_style_button" id="fc_button_mode_down"
                 label="fc_msg_left">
-          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="130, 0" />
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="164, 0" />
         </button>
 
         <!-- Current mode value (set programmatically) -->
         <text style="fc_style_text_impose" id="fc_text_mode_value">
-          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="198, 0" />
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="232, 0" />
         </text>
 
         <!-- Known-bad limit warning; shown only when a game is running and
@@ -201,14 +213,14 @@
         </text>
         <button style="_common_default_style_button" id="fc_button_hud_down"
                 label="fc_msg_left">
-          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="130, 0" />
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="164, 0" />
         </button>
         <text style="fc_style_text_impose" id="fc_text_hud_value">
-          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="198, 0" />
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="232, 0" />
         </text>
         <button style="_common_default_style_button" id="fc_button_hud_up"
                 label="fc_msg_right">
-          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="300, 0" />
+          <layout_hint align="1, 0" size="48, 48" anchor="1, 4" pos="334, 0" />
         </button>
 
         <!-- Overlay corner, right-anchored: label, down, value, up -->
@@ -242,11 +254,16 @@
         <text style="fc_style_text_impose" id="fc_text_lowlat_label" label="fc_msg_lowlat">
           <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="216, 0" />
         </text>
+        <!-- Shown when the running title's GXM init never passed the hook
+             (the overlay's NOT HOOKED): same mark as the FPS row's -->
+        <text style="fc_style_text_warn" id="fc_text_lowlat_warn">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="296, 0" />
+        </text>
         <check_box id="fc_check_jit">
-          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="306, 0" />
+          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="334, 0" />
         </check_box>
         <text style="fc_style_text_impose" id="fc_text_jit_label" label="fc_msg_jit">
-          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="358, 0" />
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="386, 0" />
         </text>
         <!-- Right-anchored: Save at 7 is the system's own position for a
              right-hand control, the rest steps left from it. -->
@@ -267,6 +284,27 @@
                 label="fc_msg_save">
           <layout_hint align="2, 0" size="70, 46" anchor="2, 4" pos="7, 0" />
         </button>
+      </group>
+
+      <!-- Fourth row: panel refresh. Modes in the Lowlat column, Auto in
+           the Antilag column. Hidden on a PS TV. -->
+      <group id="fc_group_impose_panel">
+        <layout_hint size="728, 70, 0" />
+        <text style="fc_style_text_impose" id="fc_text_panel_label" label="fc_msg_panel">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="44, 0" />
+        </text>
+        <check_box id="fc_check_panel">
+          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="164, 0" />
+        </check_box>
+        <text style="fc_style_text_impose" id="fc_text_panel_modes_label" label="fc_msg_panel_modes">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="216, 0" />
+        </text>
+        <check_box id="fc_check_panel_auto">
+          <layout_hint align="1, 0" size="46, 46" anchor="1, 4" pos="334, 0" />
+        </check_box>
+        <text style="fc_style_text_impose" id="fc_text_panel_auto_label" label="fc_msg_panel_auto">
+          <layout_hint align="1, 0" adjust="2, 2" anchor="1, 4" pos="386, 0" />
+        </text>
       </group>
     </template>
   </templatetable>

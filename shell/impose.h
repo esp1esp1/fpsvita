@@ -41,6 +41,10 @@ public:
 	                        paf::ui::Event *e, void *userdata);
 	static void JitCBFun(int32_t type, paf::ui::Handler *self,
 	                     paf::ui::Event *e, void *userdata);
+	static void PanelCBFun(int32_t type, paf::ui::Handler *self,
+	                       paf::ui::Event *e, void *userdata);
+	static void PanelAutoCBFun(int32_t type, paf::ui::Handler *self,
+	                           paf::ui::Event *e, void *userdata);
 	static void SoftcapDownCBFun(int32_t type, paf::ui::Handler *self,
 	                             paf::ui::Event *e, void *userdata);
 	static void SoftcapUpCBFun(int32_t type, paf::ui::Handler *self,
@@ -97,6 +101,7 @@ private:
 	char titleid[FPSVITA_TITLEID_LEN];
 	bool hasGame;
 	bool readPeek;     /* the title's state.txt line has read=peek */
+	bool llNotHooked;  /* Lowlat ticked, the game presents, its GXM init never passed the hook */
 	bool valid;
 	bool registered;   /* Update was added to MainThreadCallList */
 };

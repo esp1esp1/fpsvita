@@ -15,7 +15,7 @@ enum {
 
 struct FpsvitaCompatEntry { const char *id; unsigned flags; };
 
-static const FpsvitaCompatEntry fpsvita_compat[] = {
+static const struct FpsvitaCompatEntry fpsvita_compat[] = {
 	{ "PCSA00011", 1u },
 	{ "PCSA00015", 8u },
 	{ "PCSA00017", 1u },

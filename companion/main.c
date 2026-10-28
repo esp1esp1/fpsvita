@@ -31,6 +31,7 @@
 #include <taihen.h>
 
 #include "../common/fpsvita_common.h"
+#include "../shell/compat_data.h"
 #ifdef FPSVITA_LITE
 #include "lite.h"
 #endif
@@ -76,6 +77,9 @@ enum {
 	HOOK_CTRL_READ_NEG2,          /* 0x27A0C5FB sceCtrlReadBufferNegative2 */
 	HOOK_TOUCH_PEEK,              /* 0xFF082DF0 sceTouchPeek: phase marker when no ctrl hook landed */
 	HOOK_TOUCH_READ,              /* 0x169A1D58 sceTouchRead */
+	HOOK_REFRESH_RATE,            /* 0xA08CA60D sceDisplayGetRefreshRate: panel-rate lie */
+	HOOK_GXM_VSH_INITIALIZE,      /* 0xA04F5FAC sceGxmVshInitialize: what newer vitaGL ports call */
+	HOOK_PVR_SWAP,                /* 0xA7D1D94E PVRSRVSwapToDCBuffer: the PowerVR GLES stack's submit */
 	HOOK_COUNT
 };
 #define HOOK_CTRL_FIRST HOOK_CTRL_PEEK
@@ -83,8 +87,26 @@ enum {
 
 static SceUID          s_hookId[HOOK_COUNT];
 static tai_hook_ref_t  s_hookRef[HOOK_COUNT];
+static int installHooksOnLoadedModules(void);   /* with the hook table, below */
+static unsigned hookMask(void);
 
 #define logicWaitRet(r) (r)
+
+/* Panel mode: the firmware still reports the stock 59.94 Hz, so a game that
+ * computes dt from the reported rate sees the wrong one. Return the granted
+ * rate instead. Runs in release builds too; the dev probe counts calls. */
+static int sceDisplayGetRefreshRate_patched(float *fps)
+{
+	int r = TAI_CONTINUE(int, s_hookRef[HOOK_REFRESH_RATE], fps);
+	if (r >= 0 && fps) {
+		FpsvitaState st;
+		st.panel_hz = 0;
+		fpsvitaGetState(&st, sizeof(st));
+		if (st.panel_hz > 0)
+			*fps = (float)st.panel_hz;
+	}
+	return r;
+}
 
 /* ------------------------------------------------------------------
  * Auto-detect state
@@ -105,7 +127,21 @@ static int s_rateLog = 0;      /* config.txt `log=1` */
  * dev builds the probe lines from game threads. Lines from two threads interleaved once, so one
  * writer at a time: the rest wait up to 20 ms and then drop their line
  * rather than stall a game thread on flash. */
+#define FPSVITA_LOG_PATH "ur0:data/fpsvita/helper.log"
+#define FPSVITA_LOG_MAX  (256u * 1024u)
 static volatile int s_logLock;
+
+/* One rotation per helper start, before the first line. Keeps the log bounded
+ * without a flash operation in the frame path. */
+static void rotateHelperLog(void)
+{
+	SceIoStat st;
+	if (sceIoGetstat(FPSVITA_LOG_PATH, &st) >= 0 && st.st_size > FPSVITA_LOG_MAX) {
+		sceIoRemove(FPSVITA_LOG_PATH ".1");
+		sceIoRename(FPSVITA_LOG_PATH, FPSVITA_LOG_PATH ".1");
+	}
+}
+
 static void helperLog(const char *msg)
 {
 	int tries = 20;
@@ -113,7 +149,7 @@ static void helperLog(const char *msg)
 		if (--tries <= 0) return;
 		sceKernelDelayThread(1000);
 	}
-	SceUID fd = sceIoOpen("ur0:data/fpsvita/helper.log",
+	SceUID fd = sceIoOpen(FPSVITA_LOG_PATH,
 	                      SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0666);
 	if (fd >= 0) {
 		int n = 0;
@@ -137,6 +173,8 @@ static int s_ownsKernelState = 0;
 
 /* Interval owned by whoever was running before us, restored at module_stop */
 static int32_t s_savedInterval  = FPSVITA_INTERVAL_OFF;
+static int     s_savedInject    = FPSVITA_INJECT_OFF;
+static int     s_savedAutodetect = FPSVITA_AUTODETECT_ON;
 static int     s_appliedOverride = 0;
 
 /* Everything the helper takes from state.txt, in one read at game start. */
@@ -153,10 +191,12 @@ typedef struct HelperConfig {
 	 * ("TITLEID=2,lowlat=1,antilag=0,limiter=30,tearing=0"), -1 when the
 	 * line has none: the globals apply. */
 	int32_t pg_ll, pg_jit, pg_sc, pg_tear;
+	int32_t pg_vsync;     /* per-game "vsync=": -1 absent, 0 auto, 1 off, 2 on */
 	int     pg_read;      /* per-game "read=peek": blocking Read becomes Peek */
 	int32_t pg_panel;     /* per-game "panel=<hz>" (experimental), 0 none */
 	int     log;          /* "log=1": rate lines in helper.log */
-	int     experimental; /* "experimental=1": per-game panel= applies */
+	int     syscon;       /* "syscon=0": Antilag without the syscon presses */
+	int     panelmodes;   /* "panelmodes=1" (or the older "experimental=1"): per-game panel= applies */
 } HelperConfig;
 
 /* Opt-in latency tweak, read from state.txt at launch (see readGameConfig) */
@@ -172,8 +212,9 @@ static void noteVsyncWait(void)
 	g_last_vblank_frame = g_frame_count;
 }
 
-/* Process-clock time the last capped wait returned: the vblank reference
- * for the controller phase numbers (only capped titles have one). */
+/* Process-clock time the last pacing wait returned: the vblank reference for
+ * the controller phase numbers, and the start of the frame's own work for
+ * titles that present by flipping directly (FPSVITA_STATF_FLIPWORK). */
 static volatile uint32_t s_vbl_ret;
 static inline int vblRet(int r)
 {
@@ -354,8 +395,10 @@ static int sceDisplayWaitVblankStartMulti_patched(unsigned int interval)
 	noteVsyncWait();
 	detectNativeMulti(interval);
 	int32_t cur = fpsvitaGetInterval();
+	/* Off: the game paces itself, but its wait's return still marks where
+	 * its own frame work starts, which is what the flip-side work uses. */
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_MULTI], interval));
+		return logicWaitRet(vblRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_MULTI], interval)));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
 		return logicWaitRet(uncappedReturn(0));
 	/* Through our own import, not TAI_CONTINUE with a changed count: on
@@ -371,7 +414,7 @@ static int sceDisplayWaitVblankStart_patched(void)
 	detectNativeNonMulti();
 	int32_t cur = fpsvitaGetInterval();
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK]));
+		return logicWaitRet(vblRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK])));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
 		return logicWaitRet(uncappedReturn(0));
 	return logicWaitRet(vblRet(sceDisplayWaitVblankStartMulti((unsigned int)cur)));
@@ -383,8 +426,8 @@ static int sceDisplayWaitVblankStartMultiCB_patched(unsigned int interval)
 	detectNativeMulti(interval);
 	int32_t cur = fpsvitaGetInterval();
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_MULTI_CB],
-		                                interval));
+		return logicWaitRet(vblRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_MULTI_CB],
+		                                        interval)));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
 		return logicWaitRet(uncappedReturn(1));
 	return logicWaitRet(vblRet(sceDisplayWaitVblankStartMultiCB((unsigned int)cur)));
@@ -398,7 +441,7 @@ static int sceDisplayWaitVblankStartCB_patched(void)
 	int32_t cur = fpsvitaGetInterval();
 
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_CB]));
+		return logicWaitRet(vblRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_VBLANK_CB])));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
 		return logicWaitRet(uncappedReturn(1));
 
@@ -411,7 +454,7 @@ static int sceDisplayWaitSetFrameBufMulti_patched(unsigned int interval)
 	detectNativeMulti(interval);
 	int32_t cur = fpsvitaGetInterval();
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_MULTI], interval));
+		return logicWaitRet(vblRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_MULTI], interval)));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
 		return logicWaitRet(uncappedReturn(0));
 	/* Own import, not TAI_CONTINUE with a changed count (see the vblank hooks). */
@@ -425,7 +468,7 @@ static int sceDisplayWaitSetFrameBuf_patched(void)
 	int32_t cur = fpsvitaGetInterval();
 
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB]));
+		return logicWaitRet(vblRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB])));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
 		return logicWaitRet(uncappedReturn(0));
 
@@ -438,8 +481,8 @@ static int sceDisplayWaitSetFrameBufMultiCB_patched(unsigned int interval)
 	detectNativeMulti(interval);
 	int32_t cur = fpsvitaGetInterval();
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_MULTI_CB],
-		                                interval));
+		return logicWaitRet(vblRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_MULTI_CB],
+		                                        interval)));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
 		return logicWaitRet(uncappedReturn(1));
 	return logicWaitRet(vblRet(sceDisplayWaitSetFrameBufMultiCB((unsigned int)cur)));
@@ -453,7 +496,7 @@ static int sceDisplayWaitSetFrameBufCB_patched(void)
 	int32_t cur = fpsvitaGetInterval();
 
 	if (cur == FPSVITA_INTERVAL_OFF)
-		return logicWaitRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_CB]));
+		return logicWaitRet(vblRet(TAI_CONTINUE(int, s_hookRef[HOOK_WAIT_SETFB_CB])));
 	if (cur == FPSVITA_INTERVAL_UNCAPPED)
 		return logicWaitRet(uncappedReturn(1));
 
@@ -490,7 +533,10 @@ static int sceDisplayWaitSetFrameBufCB_patched(void)
 #define FPSVITA_CTRL_WINDOW     128
 #define FPSVITA_CTRL_AFTER_PCT  75
 
-static int s_jitEnabled = 0;    /* antilag=1: fresh poll and the whole-vblank sleep */
+static int s_jitEnabled = 0;    /* antilag=1: fresh poll, the whole-vblank sleep, syscon presses */
+static int s_sysconOn = 1;      /* config.txt syscon= (default 1): the syscon presses part of Antilag */
+static volatile uint32_t s_btn_diff, s_btn_total;   /* reads where the syscon was ahead of the newest sample */
+static volatile int32_t  s_btn_lead_ema;            /* on those reads: sample age minus press age, us */
 static int32_t s_softcap = 0;   /* `softcap=<fps>`: time-based cap used in Uncapped mode */
 static volatile uint32_t s_softcap_applied;
 /* Limiter schedule: the next release time, a period after the previous
@@ -504,6 +550,10 @@ static volatile uint32_t s_present_last, s_present_period_ema; /* SetFrameBuf to
 static uint32_t s_stats_last_push, s_stats_seq;
 #define FPSVITA_STATS_PUSH_US (250000)
 static volatile uint32_t s_work_ema, s_work_win_max, s_work_prev_max, s_work_win_n;
+/* The same measure without AddEntry: the frame's own time from its pacing
+ * wait's return to the flip. A driver that presents by calling SetFrameBuf
+ * itself (the PowerVR GLES stack) leaves nothing else to time. */
+static volatile uint32_t s_flip_work_ema;
 static volatile uint32_t s_ctrl_calls, s_ctrl_after, s_ctrl_after_pct, s_ctrl_windows;
 static volatile uint32_t s_jit_slack, s_jit_applied, s_jit_missed, s_jit_hurt;
 static int s_jit_backoff, s_jit_ramp;
@@ -570,6 +620,13 @@ static volatile uint32_t s_flag_ema, s_entry_unmatched;   /* frame's own submit-
 #define FPSVITA_FRESH_EARLY_US 1683u    /* sample a vblank less this old: the next one is due within ~2 ms */
 #define FPSVITA_FRESH_WAIT_US  2500u
 static volatile uint32_t s_miss_dbl, s_miss_near, s_imm_calls, s_imm_err, s_imm_code;
+/* The last 512 present periods, for the overlay's 1% low (slot = present
+ * count mod 512; a gap over half a second leaves its slot alone). */
+#define FPSVITA_PERIOD_RING 512
+static volatile uint32_t s_period_ring[FPSVITA_PERIOD_RING];
+static volatile uint32_t s_period_base;   /* present count when the ring last restarted */
+static volatile uint32_t s_period_regime; /* interval, Limiter and panel rate the ring was filled under */
+static volatile int s_gxmInitSeen;   /* the sceGxmInitialize hook ran in this process */
 static volatile int s_tearWanted, s_tearOk;   /* Uncapped + ADV_TEAR (last frame's state); last kernel flip succeeded */
 
 static inline int32_t clampAge(int64_t a)
@@ -640,10 +697,69 @@ static int freshPoll(tai_hook_ref_t ref, int peekIdx, int port, SceCtrlData *pad
 	return r;
 }
 
-static inline void noteCtrlOut(const SceCtrlData *pad, int r)
+
+/* Syscon control bits -> SceCtrlData button bits. Game buttons only.
+ * Confirmed by the 2026-10-27 probe for bit 6 (Cross) and bit 10 (R). */
+#define FPSVITA_SYSCON_GAME_MASK (SCE_CTRL_UP | SCE_CTRL_RIGHT | SCE_CTRL_DOWN | SCE_CTRL_LEFT \
+	| SCE_CTRL_TRIANGLE | SCE_CTRL_CIRCLE | SCE_CTRL_CROSS | SCE_CTRL_SQUARE | SCE_CTRL_SELECT \
+	| SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER | SCE_CTRL_START)
+static uint32_t sysconToCtrl(uint32_t b)
+{
+	uint32_t m = 0;
+	if (b & 0x0001) m |= SCE_CTRL_UP;
+	if (b & 0x0002) m |= SCE_CTRL_RIGHT;
+	if (b & 0x0004) m |= SCE_CTRL_DOWN;
+	if (b & 0x0008) m |= SCE_CTRL_LEFT;
+	if (b & 0x0010) m |= SCE_CTRL_TRIANGLE;
+	if (b & 0x0020) m |= SCE_CTRL_CIRCLE;
+	if (b & 0x0040) m |= SCE_CTRL_CROSS;
+	if (b & 0x0080) m |= SCE_CTRL_SQUARE;
+	if (b & 0x0100) m |= SCE_CTRL_SELECT;
+	if (b & 0x0200) m |= SCE_CTRL_LTRIGGER;
+	if (b & 0x0400) m |= SCE_CTRL_RTRIGGER;
+	if (b & 0x0800) m |= SCE_CTRL_START;
+	return m;
+}
+
+/* neg: the sample is a sceCtrl*Negative buffer (bits clear = pressed). */
+static inline void noteCtrlOut(SceCtrlData *pad, int r, int neg)
 {
 	if (r <= 0) return;
 	uint64_t ts = newestStamp(pad, r);
+	/* Antilag's syscon presses: add the buttons the syscon says are down
+	 * right now to every returned sample. SceCtrl samples the syscon once
+	 * per vblank; the kernel's word is 10 ms ahead on average (17 ms max,
+	 * one vblank; up to 25 ms at a 40 Hz panel). Presses only: a release
+	 * still waits for the vblank sample, which also keeps presses from other
+	 * sources (a remote-control tool's scripted ones) alive. The syscon reports
+	 * released buttons as 1s. The press is stamped with the time the word
+	 * changed, moved into the process clock from the kernel clock the same
+	 * call returned, so INPUT measures what the game really got. */
+	if (s_jitEnabled && s_sysconOn) {
+		FpsvitaButtons kb;
+		if (fpsvitaGetButtons(&kb) >= 0) {
+			uint32_t m = sysconToCtrl(~kb.raw);
+			uint32_t newest = neg ? ~pad[r - 1].buttons : pad[r - 1].buttons;
+			int i;
+			s_btn_total++;
+			if (m & ~newest & FPSVITA_SYSCON_GAME_MASK) {
+				/* A press the sample does not have yet: it is newer than the sample. */
+				uint64_t pnow = sceKernelGetProcessTimeWide();
+				uint64_t age_k = kb.now - kb.changed_at;
+				uint64_t stamp = age_k < 1000000ull ? pnow - age_k : 0;
+				s_btn_diff++;
+				if (stamp > ts) {
+					int32_t lead = clampAge((int64_t)(stamp - ts));
+					s_btn_lead_ema += (lead - s_btn_lead_ema) >> 3;
+					ts = stamp;
+				}
+			}
+			for (i = 0; i < r && i < 64; i++) {
+				if (neg) pad[i].buttons &= ~m;
+				else     pad[i].buttons |= m;
+			}
+		}
+	}
 	int32_t a = clampAge((int64_t)(sceKernelGetProcessTimeWide() - ts));
 	s_ts_out_ema += (a - s_ts_out_ema) >> 4;
 	if (ts > s_out_stamp) s_out_stamp = ts;
@@ -672,7 +788,7 @@ static int peekCall(int readIdx, int port, SceCtrlData *pad, int count)
 		int r = TAI_CONTINUE(int, s_hookRef[idx], port, pad, count); \
 		int32_t age = noteCtrlSample(pad, r); \
 		r = freshPoll(s_hookRef[idx], -1, port, pad, count, r, age); \
-		noteCtrlOut(pad, r); \
+		noteCtrlOut(pad, r, idx >= HOOK_CTRL_PEEK_NEG); \
 		return r; \
 	}
 /* A second blocking Read returns only the samples after the first, so with
@@ -687,7 +803,7 @@ static int peekCall(int readIdx, int port, SceCtrlData *pad, int count)
 		int32_t age = noteCtrlSample(pad, r); \
 		if (s_readPeek || count == 1) \
 			r = freshPoll(s_hookRef[idx], s_readPeek ? idx : -1, port, pad, count, r, age); \
-		noteCtrlOut(pad, r); \
+		noteCtrlOut(pad, r, idx >= HOOK_CTRL_PEEK_NEG); \
 		return r; \
 	}
 CTRL_HOOK(sceCtrlPeekBufferPositive,     HOOK_CTRL_PEEK)
@@ -716,6 +832,7 @@ static int sceTouchPeek_patched(SceUInt32 port, SceTouchData *pData, SceUInt32 n
 { if (!ctrlHooked()) noteCtrlRead(); return TAI_CONTINUE(int, s_hookRef[HOOK_TOUCH_PEEK], port, pData, nBufs); }
 static int sceTouchRead_patched(SceUInt32 port, SceTouchData *pData, SceUInt32 nBufs)
 { if (!ctrlHooked()) noteCtrlRead(); return TAI_CONTINUE(int, s_hookRef[HOOK_TOUCH_READ], port, pData, nBufs); }
+
 
 
 /* From a state already fetched this frame: no extra syscalls. */
@@ -781,19 +898,20 @@ static void jitSleep(uint32_t t_ret, int32_t cur)
 	s_jit_applied++;
 }
 
-static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
-                                              const void *callbackData)
+/* The submit path, shared by sceGxmDisplayQueueAddEntry and the PowerVR
+ * stack's PVRSRVSwapToDCBuffer (both block when the display has a frame in
+ * hand, both run on the thread that renders). Before the call: the entry
+ * ring and the CPU work. After it: the state read, the frame period, and
+ * whichever of the inject wait, the Antilag sleep or the Limiter applies. */
+static void submitPre(const void *fb, uint32_t tid, uint32_t t_in)
 {
-	uint32_t tid = (uint32_t)sceKernelGetThreadId();
-	uint32_t t_in = sceKernelGetProcessTimeLow();
 	s_ae_last_in = t_in;
 	{
 		unsigned h = s_entry_head;
 		if (h - s_entry_tail >= FPSVITA_ENTRY_RING) s_entry_tail = h - FPSVITA_ENTRY_RING + 1;
 		/* The SDK samples, vitaGL and vita2d put the framebuffer address first
 		 * in the callback data; where a title does, the flip is tied exactly. */
-		s_entries[h % FPSVITA_ENTRY_RING].fb = (callbackData && s_cb_data_size >= sizeof(void *))
-		                                       ? *(const void *const *)callbackData : NULL;
+		s_entries[h % FPSVITA_ENTRY_RING].fb = fb;
 		s_entries[h % FPSVITA_ENTRY_RING].stamp = s_out_stamp;
 		s_entries[h % FPSVITA_ENTRY_RING].t_call = t_in;
 		s_entry_head = h + 1;
@@ -819,14 +937,14 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 		}
 	}
 
-	int r = TAI_CONTINUE(int, s_hookRef[HOOK_GXM_ADD_ENTRY], oldBuffer, newBuffer,
-	                     callbackData);
+}
 
-	uint32_t t_ret = sceKernelGetProcessTimeLow();
+static void submitPost(uint32_t tid, uint32_t t_ret)
+{
 	FpsvitaState st;
 	st.interval = FPSVITA_INTERVAL_OFF; st.autodetect = FPSVITA_AUTODETECT_ON; st.inject = 0;
 	st.adv_flags = 0; st.softcap = 0;
-	fpsvitaGetState(&st);
+	fpsvitaGetState(&st, sizeof(st));
 	int32_t cur = st.interval;
 	s_jitEnabled = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
 	g_vblank_us = st.panel_hz > 0 ? 1000000u / (uint32_t)st.panel_hz : FPSVITA_VBLANK_US;
@@ -846,8 +964,10 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 	s_ae_tid = tid;
 
 
+	int late = 0;
+
 	int slept = 0, limited = 0;
-	if (injectWanted(&st)) {
+	if (injectWanted(&st) && !late) {
 		/* Pace the producer here; the SetFrameBuf path stands down. */
 		sceDisplayWaitVblankStartMulti((unsigned int)cur);
 		t_ret = sceKernelGetProcessTimeLow();
@@ -887,19 +1007,115 @@ static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
 	if (!slept) { s_jit_k = 0; s_jit_ramp = 0; s_jit_slack = 0; }
 	if (!limited) s_lim_next = 0;
 	s_ae_last_ret = t_ret;
+}
+
+static int sceGxmDisplayQueueAddEntry_patched(void *oldBuffer, void *newBuffer,
+                                              const void *callbackData)
+{
+	uint32_t tid = (uint32_t)sceKernelGetThreadId();
+	/* The SDK samples, vitaGL and vita2d put the framebuffer address first
+	 * in the callback data; where a title does, the flip is tied exactly. */
+	const void *fb = (callbackData && s_cb_data_size >= sizeof(void *))
+	               ? *(const void *const *)callbackData : NULL;
+	submitPre(fb, tid, sceKernelGetProcessTimeLow());
+	int r = TAI_CONTINUE(int, s_hookRef[HOOK_GXM_ADD_ENTRY], oldBuffer, newBuffer,
+	                     callbackData);
+	submitPost(tid, sceKernelGetProcessTimeLow());
 	return r;
+}
+
+/* PVRSRVSwapToDCBuffer(hDevice, hBuffer, ui32ClipRectCount, psClipRect,
+ * ui32SwapInterval, hPrivateTag), imported by libpvrPSP2_WSEGL from
+ * libgpu_es4_ext (GrapheneCt/PVR_PSP2, bridged_pvr_dc_glue.c). hBuffer is a
+ * PVRSRV_CLIENT_MEM_INFO whose first word is the framebuffer's CPU address,
+ * so the flip ties exactly. The display class flips on its own thread
+ * (SetFrameBuf then a vblank wait, both hooked) and the swap blocks until
+ * the previous flip is done: one frame in flight by construction, which is
+ * what Lowlat means, so the title reads as having it itself. */
+static int pvrSwapToDCBuffer_patched(void *hDevice, void *hBuffer, uint32_t nRects, void *rects,
+                                     uint32_t swapInterval, void *tag)
+{
+	uint32_t tid = (uint32_t)sceKernelGetThreadId();
+	const void *fb = hBuffer ? *(const void *const *)hBuffer : NULL;
+	s_lowLatencyNative = 1;
+	s_gxmInitSeen = 1;
+	submitPre(fb, tid, sceKernelGetProcessTimeLow());
+	int r = TAI_CONTINUE(int, s_hookRef[HOOK_PVR_SWAP], hDevice, hBuffer, nRects, rects,
+	                     swapInterval, tag);
+	submitPost(tid, sceKernelGetProcessTimeLow());
+	return r;
+}
+
+
+/* A submit hook landed: AddEntry or the PowerVR swap. */
+static int submitHooked(void)
+{
+	return s_hookId[HOOK_GXM_ADD_ENTRY] >= 0 || s_hookId[HOOK_PVR_SWAP] >= 0;
+}
+
+/* Work for a title that presents by flipping directly (no AddEntry hook): the
+ * frame's own CPU time is everything between the return of its pacing wait and
+ * the flip that ends it. AddEntry titles keep the stricter same-thread measure,
+ * so this only fills in where that one has nothing. Called at flip-hook entry,
+ * before any wait this hook injects, and only when the last wait landed inside
+ * this frame (a stale stamp means another phase or another thread). */
+static void noteFlipWork(uint32_t t)
+{
+	uint32_t vb;
+	if (submitHooked())
+		return;
+	vb = s_vbl_ret;
+	if (!vb || (int32_t)(vb - s_present_last) < 0)
+		return;
+	uint32_t w = t - vb;
+	if (w >= 100000)   /* a load or a pause, not a frame */
+		return;
+	if (s_flip_work_ema && w > s_flip_work_ema * 3 + 2000)   /* one wild sample must not stall the ramp */
+		w = s_flip_work_ema * 3 + 2000;
+	emaStep(&s_flip_work_ema, w);
+}
+
+/* 1% low over the period ring: the mean of the slowest percent of the
+ * presents in it, as fps times 10. Needs 200 presents (two slowest) and uses
+ * five once the ring is full. One pass with an insertion into a 5-slot top
+ * list, a few microseconds every push. */
+static uint32_t low1FpsX10(uint32_t frames)
+{
+	uint32_t n = frames - s_period_base;
+	if (n > FPSVITA_PERIOD_RING)
+		n = FPSVITA_PERIOD_RING;
+	if (n < 200)
+		return 0;
+	uint32_t k = n / 100, top[5] = {0, 0, 0, 0, 0}, i, j, sum = 0;
+	for (i = 0; i < n; i++) {
+		uint32_t v = s_period_ring[(frames - i) % FPSVITA_PERIOD_RING];
+		if (v <= top[k - 1])
+			continue;
+		for (j = k - 1; j > 0 && top[j - 1] < v; j--)
+			top[j] = top[j - 1];
+		top[j] = v;
+	}
+	for (i = 0; i < k; i++)
+		sum += top[i];
+	return sum ? (uint32_t)(10000000ull * k / sum) : 0;
 }
 
 /* Live numbers for the shell's overlay, pushed while it is on. */
 static void pushStats(uint32_t now, const FpsvitaState *stIn)
 {
 	FpsvitaStats st;
+	uint32_t frames = g_frame_count;
 	s_stats_last_push = now;
 	st.fps_x10      = s_present_period_ema ? 10000000u / s_present_period_ema : 0;
 	st.frame_us     = s_present_period_ema;
-	st.work_us      = s_work_ema;
+	st.work_us      = s_work_ema ? s_work_ema : s_flip_work_ema;
 	st.queue_us     = s_flag_ema;
-	st.input_us     = (uint32_t)(s_fscan_ema > 0 ? s_fscan_ema : 0);
+	/* INPUT: the frame's own sample age at its flip (AddEntry tie). Without
+	 * AddEntry (the PowerVR GLES stack flips through SetFrameBuf alone) the
+	 * newest delivered sample's age at the flip is the same thing on a
+	 * direct flip, so it stands in. */
+	st.input_us     = (uint32_t)(s_fscan_ema > 0 ? s_fscan_ema
+	                  : !submitHooked() && s_scan_ema > 0 ? s_scan_ema : 0);
 	st.ctrl_pct     = s_ctrl_after_pct;
 	st.jit_slack_us = s_jit_slack;
 	st.softcap      = stIn->softcap;
@@ -907,10 +1123,16 @@ static void pushStats(uint32_t now, const FpsvitaState *stIn)
 	                | (s_lowLatencyApplied ? FPSVITA_STATF_LOWLATENCY : 0)
 	                | (s_lowLatencyNative ? FPSVITA_STATF_LOWLAT_NATIVE : 0)
 	                | ((stIn->adv_flags & FPSVITA_ADV_JIT) ? FPSVITA_STATF_JIT : 0)
-	                | (s_hookId[HOOK_GXM_ADD_ENTRY] >= 0 ? FPSVITA_STATF_ADDENTRY : 0)
-	                | (s_tearWanted && s_tearOk ? FPSVITA_STATF_TEAR : 0);
+	                | (submitHooked() ? FPSVITA_STATF_ADDENTRY : 0)
+	                | (s_tearWanted && s_tearOk ? FPSVITA_STATF_TEAR : 0)
+	                | (s_gxmInitSeen ? FPSVITA_STATF_GXM_INIT : 0)
+	                | (!s_work_ema && s_flip_work_ema ? FPSVITA_STATF_FLIPWORK : 0);
 	st.jit_missed   = s_jit_missed;
 	st.sample_age_us = (uint32_t)(s_ts_out_ema > 0 ? s_ts_out_ema : 0);
+	st.presents     = frames;
+	st.miss         = s_miss_dbl;
+	st.low1_fps_x10 = low1FpsX10(frames);
+	st.btn_lead_us  = (uint32_t)(s_btn_lead_ema > 0 ? s_btn_lead_ema : 0);
 	st.seq          = ++s_stats_seq;
 	fpsvitaSetStats(&st);
 }
@@ -918,6 +1140,11 @@ static void pushStats(uint32_t now, const FpsvitaState *stIn)
 static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
                                           SceDisplaySetBufSync sync)
 {
+	noteFlipWork(sceKernelGetProcessTimeLow());
+	/* A submit path may still be missing (the PowerVR stack's WSEGL loads
+	 * after the first flips): look again at a few frames in. */
+	if (!submitHooked() && (g_frame_count == 120 || g_frame_count == 600))
+		installHooksOnLoadedModules();
 	/* Tearing mode: the flip goes through the kernel module
 	 * (ksceDisplaySetFrameBuf, IMMEDIATE), falling back to the normal flip
 	 * when that fails so the screen keeps updating. */
@@ -934,12 +1161,17 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 			if (!s_imm_code) s_imm_code = (uint32_t)ret;
 			ret = TAI_CONTINUE(int, s_hookRef[HOOK_SET_FRAMEBUF], pParam, sync);
 		}
-	} else {
+	}
+	else {
 		s_tearOk = 0;
 		ret = TAI_CONTINUE(int, s_hookRef[HOOK_SET_FRAMEBUF], pParam, sync);
 	}
 	/* The 64-bit stamps are written on another thread without atomicity: a
 	 * torn read shows up as a negative age, so both EMAs also reject those. */
+	if (s_out_stamp) {
+		int32_t a = clampAge((int64_t)(sceKernelGetProcessTimeWide() - s_out_stamp));
+		if (a >= 0 && a < 500000) s_scan_ema += (a - s_scan_ema) >> 4;
+	}
 	{
 		int hit = 0;
 		uint32_t tnow = sceKernelGetProcessTimeLow();
@@ -979,7 +1211,7 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 	FpsvitaState st;
 	st.interval = FPSVITA_INTERVAL_OFF; st.hud_mode = FPSVITA_HUD_OFF;
 	st.autodetect = FPSVITA_AUTODETECT_ON; st.inject = 0; st.adv_flags = 0; st.softcap = 0;
-	fpsvitaGetState(&st);
+	fpsvitaGetState(&st, sizeof(st));
 	s_jitEnabled = (st.adv_flags & FPSVITA_ADV_JIT) != 0;
 	g_vblank_us = st.panel_hz > 0 ? 1000000u / (uint32_t)st.panel_hz : FPSVITA_VBLANK_US;
 	int32_t cur = st.interval;
@@ -992,10 +1224,26 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 		uint32_t d = now - s_present_last;
 		if (d < 500000) {
 			emaStep(&s_present_period_ema, d);
-			/* A present period of about twice the cap: a frame missed its
-			 * vblank (GPU included; the CPU-only near count is in AddEntry). */
-			if (cur > 0) {
-				uint32_t budget = g_vblank_us * (uint32_t)cur;
+			/* The 1% low is over one regime: a limit, Limiter or panel change
+			 * restarts the ring, else it would report the old rate for 512 frames. */
+			uint32_t regime = ((uint32_t)cur << 24) ^ ((uint32_t)st.softcap << 8) ^ (uint32_t)st.panel_hz;
+			if (regime != s_period_regime) {
+				s_period_regime = regime;
+				s_period_base = frames;
+			}
+			s_period_ring[frames % FPSVITA_PERIOD_RING] = d;
+			/* A present period of about twice the target: a frame missed its
+			 * vblank (GPU included; the CPU-only near count is in AddEntry).
+			 * The target is the cap, else the Limiter's period under Uncapped,
+			 * else the game's own rate under Default. */
+			uint32_t budget = 0;
+			if (cur > 0)
+				budget = g_vblank_us * (uint32_t)cur;
+			else if (cur == FPSVITA_INTERVAL_UNCAPPED && st.softcap > 0)
+				budget = 1000000u / (uint32_t)st.softcap;
+			else if (cur == FPSVITA_INTERVAL_OFF && st.native_interval > 0)
+				budget = g_vblank_us * (uint32_t)st.native_interval;
+			if (budget) {
 				if (d > budget * 3 / 2 && d < budget * 5 / 2) s_miss_dbl++;
 			}
 		}
@@ -1024,7 +1272,7 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 			char line[640];
 			int len = sceClibSnprintf(line, sizeof(line) - 2,
 				"helper: rate frames=%u flips/s=%u cur=%d inject=%d since_vblank=%u ae_period=%u work=%u work_max=%u ctrl_after_pct=%u jit=%d slack=%u applied=%u missed=%u present_lag=%u softcap=%d softcap_applied=%u ll=%d"
-				" ts=%d/%d/%d ts_n=%u rd_ph=%d ts_ph=%d fresh=%u/%u/%u out=%d scan=%d fscan=%d flag=%u tied=%u unmatched=%u hurt=%u miss=%u near=%u imm=%u/%u/0x%08x",
+				" ts=%d/%d/%d ts_n=%u rd_ph=%d ts_ph=%d fresh=%u/%u/%u out=%d scan=%d fscan=%d flag=%u tied=%u unmatched=%u hurt=%u miss=%u near=%u low1=%u imm=%u/%u/0x%08x",
 				frames, dt ? (unsigned)((600ull * 1000000ull) / dt) : 0, (int)cur,
 				g_inject_active, frames - g_last_vblank_frame, s_ae_period_ema, s_work_ema,
 				s_work_prev_max > s_work_win_max ? s_work_prev_max : s_work_win_max,
@@ -1034,7 +1282,7 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
 				s_ts_min, s_ts_ema, s_ts_max, s_ts_n, s_rd_ph_ema, s_ts_ph_ema,
 				s_fresh_hit, s_fresh_miss, s_fresh_spin_ema, s_ts_out_ema, s_scan_ema,
 				s_fscan_ema, s_flag_ema, s_entry_tied, s_entry_unmatched, s_jit_hurt,
-				s_miss_dbl, s_miss_near, s_imm_calls, s_imm_err, s_imm_code);
+				s_miss_dbl, s_miss_near, low1FpsX10(frames), s_imm_calls, s_imm_err, s_imm_code);
 			if (len < 0 || len > (int)sizeof(line) - 3) len = (int)sizeof(line) - 3;
 			if (len == 0 || line[len - 1] != '\n') { line[len++] = '\n'; }
 			line[len] = '\0';
@@ -1081,7 +1329,7 @@ static int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam,
  * sceGxmInitialize: optional presentation-latency reduction
  * ------------------------------------------------------------------ */
 
-static int sceGxmInitialize_patched(const SceGxmInitializeParams *params)
+static int gxmInitialize(int hook, const char *name, const SceGxmInitializeParams *params)
 {
 	/*
 	 * displayQueueMaxPendingCount is how many presents the game may have in
@@ -1094,13 +1342,17 @@ static int sceGxmInitialize_patched(const SceGxmInitializeParams *params)
 	 * Never clamp to 0. Verified on hardware (2026-10-15): sceGxmInitialize
 	 * accepts 1, and lowlatency with jit held its cap on the titles tested;
 	 * the per-title fps cost shows in the overlay's FPS and QUEUE rows.
+	 *
+	 * sceGxmVshInitialize (SceGxmInternalForVsh) takes the same params; vitaGL,
+	 * statically linked into every port's eboot, imports it instead.
 	 */
 	{
 		char line[96];
-		sceClibSnprintf(line, sizeof(line), "helper: gxm init pending=%u lowlat=%d\n",
+		sceClibSnprintf(line, sizeof(line), "helper: %s pending=%u lowlat=%d\n", name,
 		                params ? (unsigned)params->displayQueueMaxPendingCount : 0xFFFFFFFFu, s_lowLatency);
 		helperLog(line);
 	}
+	s_gxmInitSeen = 1;
 	if (params)
 		s_cb_data_size = params->displayQueueCallbackDataSize;
 	if (params && params->displayQueueMaxPendingCount <= 1)
@@ -1109,10 +1361,20 @@ static int sceGxmInitialize_patched(const SceGxmInitializeParams *params)
 		SceGxmInitializeParams p = *params;
 		p.displayQueueMaxPendingCount = 1;
 		s_lowLatencyApplied = 1;
-		return TAI_CONTINUE(int, s_hookRef[HOOK_GXM_INITIALIZE], &p);
+		return TAI_CONTINUE(int, s_hookRef[hook], &p);
 	}
 
-	return TAI_CONTINUE(int, s_hookRef[HOOK_GXM_INITIALIZE], params);
+	return TAI_CONTINUE(int, s_hookRef[hook], params);
+}
+
+static int sceGxmInitialize_patched(const SceGxmInitializeParams *params)
+{
+	return gxmInitialize(HOOK_GXM_INITIALIZE, "gxm init", params);
+}
+
+static int sceGxmVshInitialize_patched(const SceGxmInitializeParams *params)
+{
+	return gxmInitialize(HOOK_GXM_VSH_INITIALIZE, "gxm vsh init", params);
 }
 
 /* ------------------------------------------------------------------
@@ -1144,7 +1406,10 @@ static int lineIsGlobalKey(const char *p, int linelen)
 	    || (linelen > 4  && sceClibStrncmp(p, "hud=",     4) == 0)
 	    || (linelen > 7  && sceClibStrncmp(p, "hudpos=",  7) == 0)
 	    || (linelen > 4  && sceClibStrncmp(p, "log=",     4) == 0)
+	    || (linelen > 7  && sceClibStrncmp(p, "syscon=",  7) == 0)
 	    || (linelen > 13 && sceClibStrncmp(p, "experimental=", 13) == 0)
+	    || (linelen > 11 && sceClibStrncmp(p, "panelmodes=", 11) == 0)
+	    || (linelen > 10 && sceClibStrncmp(p, "panelauto=", 10) == 0)
 	    || (linelen > 5  && sceClibStrncmp(p, "tips=",    5) == 0);
 }
 
@@ -1159,6 +1424,17 @@ static int readFileInto(const char *path, char *buf, int size)
 	int bytes = sceIoRead(fd, buf, size - 1);
 	sceIoClose(fd);
 	return bytes > 0 ? bytes : -1;
+}
+
+/* The main file, or the last complete copy when a save was interrupted. */
+static int readFileIntoBak(const char *path, char *buf, int size)
+{
+	int bytes = readFileInto(path, buf, size);
+	if (bytes > 0)
+		return bytes;
+	char bak[64];
+	sceClibSnprintf(bak, sizeof(bak), "%s.bak", path);
+	return readFileInto(bak, buf, size);
 }
 
 
@@ -1204,8 +1480,12 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 					cfg->tear = (int)sceClibStrtoll(p + 8, NULL, 10) ? 1 : 0;
 				else if (linelen > 4 && sceClibStrncmp(p, "log=", 4) == 0)
 					cfg->log = (int)sceClibStrtoll(p + 4, NULL, 10) ? 1 : 0;
+				else if (linelen > 7 && sceClibStrncmp(p, "syscon=", 7) == 0)
+					cfg->syscon = (int)sceClibStrtoll(p + 7, NULL, 10) ? 1 : 0;
 				else if (linelen > 13 && sceClibStrncmp(p, "experimental=", 13) == 0)
-					cfg->experimental = (int)sceClibStrtoll(p + 13, NULL, 10) ? 1 : 0;
+					cfg->panelmodes = (int)sceClibStrtoll(p + 13, NULL, 10) ? 1 : 0;
+				else if (linelen > 11 && sceClibStrncmp(p, "panelmodes=", 11) == 0)
+					cfg->panelmodes = (int)sceClibStrtoll(p + 11, NULL, 10) ? 1 : 0;
 			}
 		} else if (linelen > tidlen + 1 && p[tidlen] == '=') {
 			int match = 1;
@@ -1230,6 +1510,10 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 						cfg->pg_sc = (int32_t)sceClibStrtoll(q + 9, NULL, 10);
 					else if (eol - q > 9 && sceClibStrncmp(q, ",tearing=", 9) == 0)
 						cfg->pg_tear = sceClibStrtoll(q + 9, NULL, 10) ? 1 : 0;
+					else if (eol - q > 7 && sceClibStrncmp(q, ",vsync=", 7) == 0) {
+						const char *v = q + 7;
+						cfg->pg_vsync = *v == 'a' ? 0 : (sceClibStrtoll(v, NULL, 10) ? 2 : 1);
+					}
 					else if (eol - q > 9 && sceClibStrncmp(q, ",read=peek", 10) == 0)
 						cfg->pg_read = 1;
 					else if (eol - q > 7 && sceClibStrncmp(q, ",panel=", 7) == 0)
@@ -1260,25 +1544,43 @@ static __attribute__((noinline)) void readGameConfig(const char *titleid,
 	cfg->lowlatency = 0;
 	cfg->jit = 1;          /* the shell's fresh-install default: on */
 	cfg->tear = 0;
-	cfg->pg_ll = cfg->pg_jit = cfg->pg_sc = cfg->pg_tear = -1;
+	cfg->pg_ll = cfg->pg_jit = cfg->pg_sc = cfg->pg_tear = cfg->pg_vsync = -1;
 	cfg->pg_read = 0;
 	cfg->pg_panel = 0;
 	cfg->log = 0;
-	cfg->experimental = 0;
+	cfg->syscon = 1;
+	cfg->panelmodes = 0;
 
 	/* One buffer size shared with the shell (FPSVITA_STATE_BUF), so the
 	 * writer can never produce a file this reader cannot fully see. Static
 	 * because module_start runs on a thread whose stack is not ours to size;
 	 * it is the helper's only large object. */
 	static char buf[FPSVITA_STATE_BUF];
-	int n = readFileInto(FPSVITA_CONFIG_FILE, buf, sizeof(buf));
+	int n = readFileIntoBak(FPSVITA_CONFIG_FILE, buf, sizeof(buf));
 	if (n > 0)
 		parseConfigLines(buf, n, titleid, cfg, 1);   /* the globals */
-	n = readFileInto(FPSVITA_STATE_FILE, buf, sizeof(buf));
+	n = readFileIntoBak(FPSVITA_STATE_FILE, buf, sizeof(buf));
 	if (n > 0)
 		parseConfigLines(buf, n, titleid, cfg, 0);   /* this title's line */
-	if (!cfg->experimental)
-		cfg->pg_panel = 0;   /* panel refresh is opt-in: experimental=1 */
+	if (!cfg->panelmodes)
+		cfg->pg_panel = 0;   /* panel refresh is opt-in: panelmodes=1 */
+}
+
+/* The compatibility list's known-bad input titles get read=peek without a
+ * state.txt edit. The key remains for titles the list does not know. */
+static unsigned compatFlagsFor(const char *tid)
+{
+	if (!tid || !tid[0])
+		return 0;
+	for (unsigned i = 0; i < fpsvita_compat_count; i++) {
+		const char *id = fpsvita_compat[i].id;
+		int j = 0;
+		while (j < 9 && id[j] && id[j] == tid[j])
+			j++;
+		if (j == 9 && tid[j] == '\0')
+			return fpsvita_compat[i].flags;
+	}
+	return 0;
 }
 
 /* ------------------------------------------------------------------
@@ -1346,6 +1648,9 @@ static const struct HookSpec s_specs[HOOK_COUNT] = {
 	{ 0x27A0C5FB, (const void *)sceCtrlReadBufferNegative2_patched },
 	{ 0xFF082DF0, (const void *)sceTouchPeek_patched },
 	{ 0x169A1D58, (const void *)sceTouchRead_patched },
+	{ 0xA08CA60D, (const void *)sceDisplayGetRefreshRate_patched },
+	{ 0xA04F5FAC, (const void *)sceGxmVshInitialize_patched },
+	{ 0xA7D1D94E, (const void *)pvrSwapToDCBuffer_patched },
 };
 
 static char    s_titleid[32];
@@ -1433,7 +1738,13 @@ static void logEnvironment(void)
 
 /* Try the display hooks on one module's imports. Each hook is installed at
  * most once (the patched functions carry a single ref per NID), so the first
- * module that imports a function keeps it. Returns the number added. */
+ * module that imports a function keeps it. Returns the number added.
+ *
+ * Imports only, never SceGxm's exports: taiHEN writes a user export hook into
+ * the library's single mapping above 0xE0000000, shared by every process
+ * (patches.c, "TODO: Take care of SHARED_PID"), so each other process then
+ * jumps to a handler address that exists only in this one. An AddEntry
+ * export hook killed SceShell on its next frame (2026-10-27). */
 static int installDisplayHooks(const char *modname)
 {
 	int i, added = 0;
@@ -1449,8 +1760,48 @@ static int installDisplayHooks(const char *modname)
 	return added;
 }
 
+/* Try the hooks on every module loaded into this process. The loader hooks
+ * only see what the main module loads itself; a module loaded by another
+ * module (libpvrPSP2_WSEGL, loaded by libIMGEGL) is only reachable this way.
+ * Modules mapped at or above 0xE0000000 are the system's shared libraries:
+ * their import stubs live in the one mapping every process shares, and a
+ * hook there is the SceGxm export trap again (the first walk, 2026-10-28,
+ * put eleven hooks into SceCommonDialog and friends). Skipped. Returns the
+ * number of hooks added. */
+static int installHooksOnLoadedModules(void)
+{
+	static SceUID mods[128];
+	static SceKernelModuleInfo info;
+	SceSize num = sizeof(mods) / sizeof(mods[0]);
+	int added = 0;
+	if (sceKernelGetModuleList(0xFF, mods, &num) < 0)
+		return 0;
+	for (SceSize i = 0; i < num; i++) {
+		info.size = sizeof(info);
+		if (sceKernelGetModuleInfo(mods[i], &info) < 0)
+			continue;
+		if ((uint32_t)info.segments[0].vaddr >= 0xE0000000u)
+			continue;   /* shared system library */
+		/* Only the app's own modules (app0: or ux0:app/<id>/): not the
+		 * system's per-process ones, not other plugins, and above all not
+		 * this module, whose own import stubs carry the injected waits and
+		 * the fresh poll (the first walk hooked them and halved the rate). */
+		if (sceClibStrncmp(info.path, "app0:", 5) != 0 && sceClibStrncmp(info.path, "ux0:app/", 8) != 0)
+			continue;
+		added += installDisplayHooks(info.module_name);
+	}
+	if (added > 0) {
+		char line[80];
+		sceClibSnprintf(line, sizeof(line), "helper: modwalk hooks+=%d mask=0x%04x\n", added, hookMask());
+		helperLog(line);
+	}
+	return added;
+}
+
 /* Hooks that can pace or observe presentation (display waits, SetFrameBuf,
- * GXM). Controller and touch hooks alone are instrumentation: a main module
+ * AddEntry). The GXM init hooks do not count: a main module that only
+ * initialises GXM and renders from a PRX must keep the late-module search
+ * going (ownership ends it). Controller and touch hooks alone are instrumentation: a main module
  * with its input in the executable and its renderer in a PRX loaded later
  * must still get the loader hooks, and must not take the kernel state until
  * the display imports are found. */
@@ -1458,8 +1809,8 @@ static int pacingHooked(void)
 {
 	int i;
 	for (i = 0; i < HOOK_CTRL_FIRST; i++)
-		if (s_hookId[i] >= 0) return 1;
-	return 0;
+		if (s_hookId[i] >= 0 && i != HOOK_GXM_INITIALIZE) return 1;
+	return s_hookId[HOOK_PVR_SWAP] >= 0;
 }
 
 static unsigned hookMask(void)
@@ -1482,6 +1833,13 @@ static void takeKernelOwnership(void)
 {
 	if (s_ownsKernelState)
 		return;
+	/* Do not export-hook AddEntry here for titles that import it nowhere
+	 * (Sony's PowerVR GLES stack, HELP04040): tried 2026-10-27, the device
+	 * froze hard within the first minute (power-button restart). The init
+	 * export hooks are fine; AddEntry's hook sleeps and waits on the
+	 * calling thread, which that driver evidently cannot afford. */
+	if (!submitHooked())
+		installHooksOnLoadedModules();
 	writeTitleIdToKernel(s_titleid);   /* releases any panel rate the last title left */
 	if (s_cfg.pg_panel > 0) {
 		/* The kernel range-checks it and refuses on anything but the OLED's
@@ -1490,13 +1848,22 @@ static void takeKernelOwnership(void)
 		char line[64];
 		fpsvitaSetPanel(s_cfg.pg_panel);
 		st.panel_hz = 0;
-		fpsvitaGetState(&st);
+		fpsvitaGetState(&st, sizeof(st));
 		sceClibSnprintf(line, sizeof(line), "helper: panel want=%d got=%d\n",
 		                (int)s_cfg.pg_panel, (int)st.panel_hz);
 		helperLog(line);
 	}
 	fpsvitaSetNativeInterval(0);
 	s_savedInterval = s_cfg.interval;
+	s_savedInject = s_cfg.inject;
+	s_savedAutodetect = s_cfg.autodetect;
+	{
+		int vs = s_cfg.pg_vsync;
+		fpsvitaSetAutodetect(vs == 0 ? FPSVITA_AUTODETECT_ON
+		                    : vs == 1 ? FPSVITA_AUTODETECT_OFF : s_cfg.autodetect);
+		fpsvitaSetInject(vs == 2 ? FPSVITA_INJECT_ON
+		                : vs == 1 ? FPSVITA_INJECT_OFF : s_cfg.inject);
+	}
 	{
 		/* Latency options for this title go to the kernel, where the quick
 		 * menu can change them live; the frame path reads them back. */
@@ -1612,15 +1979,21 @@ int module_start(SceSize argc, const void *args)
 	sceClibMemset(s_titleid, 0, sizeof(s_titleid));
 	/* Param 12 = title id (what VitaGrafix and PSVshellPlus use). */
 	int pr = sceAppMgrAppParamGetString(0, 12, s_titleid, sizeof(s_titleid));
-	/* No title id, or a system app (NPXS*: screenshot service, trophy
-	 * manager, ...): nothing to pace. Leave without touching the flash. */
-	if (pr < 0 || s_titleid[0] == '\0' || sceClibStrncmp(s_titleid, "NPXS", 4) == 0)
+	/* No title id, a system app (NPXS*: screenshot service, trophy
+	 * manager, ...), or the PSP emulator (Adrenaline): nothing to pace.
+	 * Leave without touching the flash. */
+	if (pr < 0 || s_titleid[0] == '\0' || sceClibStrncmp(s_titleid, "NPXS", 4) == 0
+	    || sceClibStrncmp(s_titleid, FPSVITA_ADRENALINE_TITLEID,
+	                      sizeof(FPSVITA_ADRENALINE_TITLEID) - 1) == 0)
 		return SCE_KERNEL_START_NO_RESIDENT;
 
+	rotateHelperLog();
 	readGameConfig(s_titleid, &s_cfg);
 	s_pergame = s_cfg.pergame;
-	s_readPeek = s_cfg.pg_read;
+	s_readPeek = s_cfg.pg_read
+	             || (compatFlagsFor(s_titleid) & FPSVITA_COMPAT_NOINPUT);
 	s_rateLog = s_cfg.log;
+	s_sysconOn = s_cfg.syscon;
 #ifdef FPSVITA_LITE
 	/* No shell to seed the globals: this process is its own kernel. */
 	fpsvitaSetInterval(s_cfg.interval);
@@ -1632,9 +2005,13 @@ int module_start(SceSize argc, const void *args)
 	int installed = installDisplayHooks(TAI_MAIN_MODULE);
 	int pacing = pacingHooked();
 	int loaders = pacing ? 0 : installLoaderHooks();
+	/* init=: the GXM init imports found on the main module, sceGxmInitialize
+	 * then sceGxmVshInitialize (i hooked, - not); late modules may add one. */
+	char init[3] = { s_hookId[HOOK_GXM_INITIALIZE] >= 0 ? 'i' : '-',
+	                 s_hookId[HOOK_GXM_VSH_INITIALIZE] >= 0 ? 'i' : '-', 0 };
 	sceClibSnprintf(line, sizeof(line),
-	                "helper: %s hooks=%d mask=0x%04x loaders=%d pergame=%d read=%d\n",
-	                s_titleid, installed, hookMask(), loaders, (int)s_pergame, s_readPeek);
+	                "helper: %s hooks=%d mask=0x%04x loaders=%d pergame=%d read=%d init=%s\n",
+	                s_titleid, installed, hookMask(), loaders, (int)s_pergame, s_readPeek, init);
 	helperLog(line);
 	logEnvironment();
 
@@ -1673,6 +2050,8 @@ int module_stop(SceSize argc, const void *args)
 	}
 	if (s_ownsKernelState) {
 		fpsvitaSetNativeInterval(0);
+		fpsvitaSetInject(s_savedInject);
+		fpsvitaSetAutodetect(s_savedAutodetect);
 		fpsvitaSetAdvanced(s_savedAdvFlags, s_savedSoftcap);
 		s_ownsKernelState = 0;
 	}

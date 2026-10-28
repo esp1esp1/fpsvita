@@ -62,6 +62,7 @@ run_one() {   # name
 {
     extract_range "$ROOT/companion/main.c" '^static int lineIsGlobalKey' || exit 1
     extract_range "$ROOT/companion/main.c" '^static int readFileInto' || exit 1
+    extract_range "$ROOT/companion/main.c" '^static int readFileIntoBak' || exit 1
     extract_range "$ROOT/companion/main.c" '^static int antilagValue' || exit 1
     extract_range "$ROOT/companion/main.c" '^static void parseConfigLines' || exit 1
     extract_range "$ROOT/companion/main.c" '^static __attribute__((noinline)) void readGameConfig' || exit 1
@@ -71,6 +72,10 @@ run_one statetest
 # --- autodetect: the inject state machine ---
 extract_range "$ROOT/companion/main.c" '^static int autodetectTick' > autodetect.inc || exit 1
 run_one autodetect
+
+# --- flipwork: the CPU estimate for titles that present without AddEntry ---
+extract_range "$ROOT/companion/main.c" '^static void noteFlipWork' > flipwork.inc || exit 1
+run_one flipwork
 
 printf '\n'
 if [ "$rc" -eq 0 ]; then echo "ALL SUITES PASSED"; else echo "FAILURES (see above)"; fi

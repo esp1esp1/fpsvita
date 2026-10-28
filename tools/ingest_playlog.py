@@ -26,7 +26,7 @@ ap.add_argument('--keep', action='store_true')
 ap.add_argument('--out', default='play.tsv')
 args = ap.parse_args()
 
-COLS = ['ingested', 'title', 'launch', 'mask', 'pergame', 'frames', 'flips', 'cur', 'inject',
+COLS = ['ingested', 'title', 'launch', 'mask', 'pergame', 'init', 'gl', 'frames', 'flips', 'cur', 'inject',
         'ae_period', 'work', 'work_max', 'ctrl_after_pct', 'jit', 'slack', 'applied', 'missed',
         'present_lag', 'softcap', 'softcap_applied', 'll',
         # 2026-10-17 latency instrument (all us): controller sample age at the read
@@ -37,7 +37,8 @@ COLS = ['ingested', 'title', 'launch', 'mask', 'pergame', 'frames', 'flips', 'cu
         # misses, IMMEDIATE calls/errors/first code
         'ts_min', 'ts_ema', 'ts_max', 'ts_n', 'rd_ph', 'ts_ph', 'fresh_hit', 'fresh_miss',
         'fresh_spin', 'out', 'scan', 'fscan', 'flag', 'tied', 'unmatched', 'hurt', 'miss',
-        'near', 'imm_calls', 'imm_err', 'imm_code', 'immq_wait', 'immq_calls',
+        'near', 'low1', 'imm_calls', 'imm_err', 'imm_code', 'immq_wait', 'immq_calls', 'rr',
+        'hp0', 'hp1', 'hp2', 'hp3', 'hpa0', 'hpa1', 'hpa2', 'hpa3', 'lt', 'btn_diff', 'btn_total',
         # Source probe (development builds), from the `helper: probe` line that follows each
         # rate line: calls in the rate window to sceDisplayGetVcount, sceRtcGetCurrentTick,
         # sceKernelGetSystemTimeWide, sceKernelGetProcessTimeLow, sceDisplayGetVcountInternal,
@@ -67,17 +68,21 @@ RATE_RE = (r'helper: rate frames=(\d+) flips/s=(\d+) cur=(-?\d+) inject=(\d+) si
            r'(?: ts=(-?\d+)/(-?\d+)/(-?\d+) ts_n=(\d+) rd_ph=(-?\d+) ts_ph=(-?\d+)'
            r' fresh=(\d+)/(\d+)/(\d+) out=(-?\d+) scan=(-?\d+)'
            r'(?: fscan=(-?\d+) flag=(\d+)(?: tied=(\d+))? unmatched=(\d+)(?: hurt=(\d+))?)?'
-           r' miss=(\d+) near=(\d+) imm=(\d+)/(\d+)(?:/(0x[0-9a-f]+))?(?: immq=(\d+)/(\d+))?)?')
+           r' miss=(\d+) near=(\d+)(?: low1=(\d+))? imm=(\d+)/(\d+)(?:/(0x[0-9a-f]+))?(?: immq=(\d+)/(\d+))?(?: rr=(-?\d+))?(?: hp=(\d+)/(\d+)/(\d+)/(\d+) hpa=(\d+)/(\d+)/(\d+)/(\d+))?(?: lt=(\d+))?(?: btn=(\d+)/(\d+))?)?')
 
 f = FTP(); f.connect(args.ip, 1337, timeout=20); f.login('anonymous', '')
-b = io.BytesIO()
-try:
-    f.retrbinary('RETR ur0:/data/fpsvita/helper.log', b.write)
-except Exception as e:
-    sys.exit(f'no helper.log on the console ({e})')
-log = b.getvalue().decode(errors='replace')
+chunks = []
+for remote in ('ur0:/data/fpsvita/helper.log.1', 'ur0:/data/fpsvita/helper.log'):
+    b = io.BytesIO()
+    try:
+        f.retrbinary('RETR ' + remote, b.write)
+        chunks.append(b.getvalue())
+    except Exception as e:
+        if remote.endswith('.log'):
+            sys.exit(f'no helper.log on the console ({e})')
+log = b''.join(chunks).decode(errors='replace')
 
-rows = []; title = mask = pergame = ''; launch = 0; unmatched_rate = 0; orphan_rate = 0
+rows = []; title = mask = pergame = init = ''; gl = ''; launch = 0; unmatched_rate = 0; orphan_rate = 0
 env_vals = [''] * len(ENV_COLS)
 stamp = time.strftime('%Y-%m-%d %H:%M')
 # A probe line belongs to the rate line directly before it (same 600-present
@@ -85,11 +90,18 @@ stamp = time.strftime('%Y-%m-%d %H:%M')
 # not hand its probe counts to the previous row.
 probe_target = None
 for l in log.splitlines():
-    m = re.match(r'helper: (\S+) hooks=\d+ mask=0x(\w+) loaders=\d+ pergame=(-?\d+)', l)
+    m = re.match(r'helper: (\S+) hooks=\d+ mask=0x(\w+) loaders=\d+ pergame=(-?\d+)(?: read=\d+)?(?: init=(\S+))?', l)
     if m:
         title, mask, pergame = m.group(1), '0x' + m.group(2), m.group(3); launch += 1
+        # init: the GXM init import hooks per entry point (i landed, - not);
+        # gl: 1 once the title's init went through vitaGL's sceGxmVshInitialize.
+        init = m.group(4) or ''; gl = ''
         env_vals = [''] * len(ENV_COLS)
         probe_target = None; continue
+    if l.startswith('helper: gxm vsh init'):
+        gl = '1'; continue
+    if l.startswith('helper: gxm init'):
+        gl = '0'; continue
     m = ENV_RE.match(l)
     if m:
         env_vals = list(m.groups())
@@ -97,7 +109,7 @@ for l in log.splitlines():
     if l.startswith('helper: rate'):
         m = re.match(RATE_RE, l)
         if m and title:
-            rows.append([stamp, title, launch, mask, pergame] + [g if g is not None else '' for g in m.groups()]
+            rows.append([stamp, title, launch, mask, pergame, init, gl] + [g if g is not None else '' for g in m.groups()]
                         + [''] * PROBE_COLS + env_vals + ['unknown', 'gate-less'])
             probe_target = rows[-1]
         else:
@@ -123,19 +135,18 @@ if os.path.exists(args.out):
 if old_rows and old_rows[0] != COLS:
     old_header = old_rows[0]
     data = old_rows[1:]
-    # New columns sit before phase/gate, not after them: insert the padding
-    # at the old phase position so the last two values keep their meaning.
-    # Guard on the exact inserted names; an unrelated future schema change
-    # falls back to append-and-pad.
-    inserted = (COLS[len(old_header) - 2:len(COLS) - 2]
-                if len(old_header) >= 2 and len(COLS) >= len(old_header) else [])
-    if (old_header[-2:] == ['phase', 'gate'] and COLS[-2:] == ['phase', 'gate']
-            and inserted == ENV_COLS):
-        add = len(inserted)
+    # Map old rows by column name so a new column can be inserted anywhere.
+    # Fall back to append-and-pad when the old header is unknown or ambiguous.
+    if (len(old_header) == len(set(old_header))
+            and all(c in COLS for c in old_header)):
+        pos = [COLS.index(c) for c in old_header]
         fixed = []
         for r in data:
             r = r + [''] * (len(old_header) - len(r))
-            fixed.append(r[:-2] + [''] * add + r[-2:])
+            out = [''] * len(COLS)
+            for j, v in enumerate(r[:len(old_header)]):
+                out[pos[j]] = v
+            fixed.append(out)
         data = fixed
     else:
         data = [r + [''] * max(0, len(COLS) - len(r)) for r in data]
@@ -158,7 +169,8 @@ for r in rows:
              f" pt={d['src_pt']}/{d['src_ptw']} vcb={d['vcb_reg']}/{d['vcb_unreg']}/{d['cb_check']}" if d['src_vc'] else ''))
 
 if not args.keep:
-    try: f.delete('ur0:/data/fpsvita/helper.log')
-    except Exception as e:
-        if not str(e).startswith('226'): print('could not clear helper.log:', e)
+    for remote in ('ur0:/data/fpsvita/helper.log.1', 'ur0:/data/fpsvita/helper.log'):
+        try: f.delete(remote)
+        except Exception as e:
+            if not str(e).startswith('226'): print('could not clear ' + remote + ':', e)
 f.quit()

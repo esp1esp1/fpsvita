@@ -21,3 +21,4 @@ fpsvita-kernel:
         - fpsvitaSetStats
         - fpsvitaSetFrameBufImmediate
         - fpsvitaSetPanel
+        - fpsvitaGetButtons
