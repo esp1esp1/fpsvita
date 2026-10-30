@@ -1,8 +1,10 @@
 # fpsvita
 
-fpsvita is a set of taiHEN plugins for the PS Vita that lowers input latency, shows what a
-game's frames and input are doing, and sets frame-rate limits. You control it from the
-quick menu while a game runs, and it keeps a profile per game.
+fpsvita is a set of taiHEN plugins for the PS Vita that cuts input lag, paces frames evenly,
+and shows what a game's frames and input are really doing. Button presses and stick moves
+reach the game straight from the controller chip, the screen's refresh rate can follow what a
+game keeps up with, and an overlay measures the result. You control it from the quick menu
+while a game runs, and it keeps a profile per game.
 
 | Overlay | Frame limit | Quick menu |
 |---|---|---|
@@ -14,22 +16,29 @@ shots are [below](#before-and-after).*
 
 ## What it does
 
-- **Antilag**: hands the game a newer controller sample so a button press reaches the screen
-  sooner, without changing the game's frame rate. Button presses come straight from the
-  controller chip, up to a refresh ahead of the system's once-per-refresh sample for the
-  presses that land between that sample and the game's read. On by default;
-  at a 30 or 20 limit it also moves the game's input read later.
+- **Antilag: presses and sticks straight from the controller chip.** The system samples the
+  controller once per refresh. fpsvita's kernel module reads the chip itself at 1 kHz and
+  hands the game a button press up to a refresh earlier (about 10 ms at 60 Hz, up to 25 ms at
+  a 40 Hz panel), and gives the analog sticks the same treatment during motion once it has
+  learned how the system scales them. The game's frame rate is untouched, and remappers and
+  stick plugins keep their buttons. On by default; at a 30 or 20 limit it also moves the
+  game's input read later.
+- **Auto: the screen follows the game.** Instead of a game stuttering between 60 and 40 fps,
+  Auto holds the panel at the highest refresh rate the game keeps up with (60, 50, 45 or
+  40 Hz, one frame per refresh, with a 30 limit as the floor). It checks every two seconds,
+  steps down after two bad checks so a level load does not count, and climbs back after a
+  clean streak. Evenly paced frames on the OLED and the Slim's LCD; tick Auto on the quick
+  menu's Panel row. Not for games whose speed is tied to the frame rate.
+- **Lowlat**: a shorter display queue, so a finished frame reaches the screen up to a frame
+  sooner. Nearly all of the Dead or Alive gain below is Lowlat.
 - **Overlay**: frame rate, CPU time, input age (INPUT) and queue time over the game, plus a
   TIP row with advice (`tips=0` turns it off) and a LAST row with before/after numbers for
   your last change.
-- **Lowlat, Limiter, Tearing**: a shorter display queue, a time-based limit for rates such as
-  40 or 45, and immediate flips.
-- **Frame limits**: 60, 30, 20 fps or uncapped, plus a Vsync wait for games that never wait.
+- **Frame limits**: 60, 30, 20 fps or uncapped, a Vsync wait for games that never wait, a
+  time-based Limiter for rates such as 40 or 45, and Tearing (immediate flips).
+- **Panel modes**: pick 50, 45 or 40 Hz yourself for one game (tick Modes on the Panel row,
+  then the rate on the FPS row) when you would rather hold a rate than let Auto choose.
 - **Per-game profiles**: Save stores a game's settings, which load at its next launch.
-- **Panel refresh**: runs the screen at a lower rate such as 40 or 45 Hz for one game, so a
-  game that cannot hold 60 gets evenly paced frames. Tick Modes on the quick menu's Panel row,
-  then pick 50Hz, 45Hz or 40Hz on the FPS row, or tick Auto and let fpsvita hold the highest
-  rate the game keeps up with. OLED and Slim.
 - **Lite mode**: one plugin and two text files, without the quick menu or overlay.
 
 Seven titles have measured before/after numbers in
