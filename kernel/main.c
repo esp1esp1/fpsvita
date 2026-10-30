@@ -12,6 +12,7 @@
 #include <psp2kern/kernel/proc_event.h>
 #include <psp2kern/display.h>
 #include <psp2kern/kernel/threadmgr.h>
+#include <psp2kern/kernel/debug.h>
 #include <psp2kern/kernel/suspend.h>
 #include <psp2kern/kernel/sysroot.h>
 #include <psp2kern/kernel/syscon.h>
@@ -41,7 +42,26 @@ static volatile uint32_t g_titleid[3]    = {0, 0, 0};
 static volatile int32_t g_hud_mode       = FPSVITA_HUD_OFF;
 static volatile int32_t g_hud_pos        = 0;
 static volatile int32_t g_adv_flags      = 0;
-static volatile int     g_stk_hold;   /* sysEvent: suspend or shutdown under way, no syscon packets */
+/* Syscon gate for the button thread. SceSyscon (decompiled 2026-10-29/30)
+ * keeps every caller's packet, ours and Sony's, in one FIFO, and a sync
+ * caller waits on a semaphore with no timeout. The suspend sequence
+ * (sysevents 0x100 .. 0x402, then 0x400F down to 0x4000) switches the driver
+ * to polling at 0x400F and disables its interrupt at 0x4006 without draining
+ * that FIFO, and resume (0x10000 .. 0x1000F, 0x40000, 0x100000 .., 0x400000)
+ * never clears a stranded packet: anything in flight across that edge
+ * blocks its caller and everyone after it for ever, which is the "hangs
+ * after sleep" of 2026-10-29 (SceCtrl's own stick packet queues behind it,
+ * so nothing responds; the forced reboot then tore SceShell's database).
+ * So: g_sc_quiet refuses new packets from the first suspend phase, and the
+ * handler waits for g_sc_busy (a call under way) to clear before it lets
+ * the sequence go on; the gate opens again at 0x100000 (after
+ * sceKernelCpuResumeIntr, syscon back in interrupt mode since 0x1000F) and
+ * stays open through the later resume phases. */
+static volatile int     g_sc_quiet;   /* 1: no syscon packets from the button thread */
+static volatile int     g_sc_busy;    /* the button thread is inside a syscon call */
+static FpsvitaSticks    g_stk;        /* the stick ring (fpsvitaGetSticks) */
+static uint32_t         g_stk_errs;   /* stick poll refusals in a row; 8 stops it until the next resume */
+static volatile uint32_t g_sc_quiet_ticks;   /* button-thread ticks spent quiet (aborted suspend fallback) */
 static volatile int32_t g_softcap        = 0;
 static FpsvitaStats     g_stats;          /* zeroed when a new title id lands */
 static SceUID           g_owner_pid = -1; /* process that wrote the title id */
@@ -237,11 +257,32 @@ static void ownerGone(SceUID pid)
  * live change that has always been clean. */
 int ksceKernelUnregisterSysEventHandler(SceUID id);
 
+
 static int sysEvent(int resume, int eventid, void *args, void *opt)
 {
-	/* No stick packets from the first suspend or shutdown phase until the
-	 * resume completes: the syscon runs the power sequence. */
-	g_stk_hold = !resume || eventid != 0x100000;
+	int busy = g_sc_busy, waited = 0; (void)waited;
+	(void)busy;
+	if (!resume) {
+		/* Close the gate, then let a call that is already under way finish:
+		 * a packet takes about a millisecond, the phases that follow can be
+		 * quicker than that. Only where the dispatcher is in plain thread
+		 * context (0x100 is before sceKernelCpuSuspendIntr, 0x200 .. 0x402
+		 * after sceKernelCpuResumeIntr); never at 0x101/0x102. */
+		g_sc_quiet = 1;
+		__sync_synchronize();
+		if (eventid == 0x100 || (eventid >= 0x200 && eventid <= 0x402)) {
+			/* A clock spin, not a thread sleep: the handler's context is
+			 * ScePower's, and a sleep there is not known to be legal. The
+			 * call under way completes on the syscon interrupt (another CPU
+			 * or this one once the spin ends), then unlinks its packet. */
+			uint64_t t0 = ksceKernelGetSystemTimeWide();
+			while (g_sc_busy && (uint64_t)(ksceKernelGetSystemTimeWide() - t0) < 20000) ;
+			waited = (int)(ksceKernelGetSystemTimeWide() - t0);
+		}
+	} else if (eventid >= 0x100000 && g_sc_quiet) {
+		g_stk_errs = 0;   /* a burst of refusals around the edge is not a dead bus */
+		g_sc_quiet = 0;
+	}
 	if (!resume) {
 		if (g_panel_hz > 0 && !g_panel_resume) {   /* first suspend phase only */
 			g_panel_resume = g_panel_hz;
@@ -430,8 +471,6 @@ static SceUID            g_btn_thread = -1;
  * with Antilag is owned, gives the helper a stick value up to a vblank
  * fresher; the helper only uses it while it matches what SceCtrl reports a
  * vblank later (companion/main.c). Reply bytes 4-7 are lx ly rx ry. */
-static FpsvitaSticks g_stk;
-static uint32_t g_stk_errs;
 
 /* Synchronous exchange with a STACK packet, exactly as Sony's own
  * ksceSysconReadCommand does (it builds the packet on its stack, calls
@@ -449,7 +488,7 @@ static uint32_t g_stk_errs;
  * the driver appends the checksum. */
 static int stkPoll(void)
 {
-	if (g_stk_errs >= 8 || g_stk_hold) return -1;   /* the bus said no, or the system is going down */
+	if (g_stk_errs >= 8) return -1;   /* the bus said no (reset on resume) */
 	SceSysconPacket pkt;
 	memset(&pkt, 0, sizeof(pkt));
 	pkt.tx[0] = 0x01; pkt.tx[1] = 0x01; pkt.tx[2] = 0x01;
@@ -468,6 +507,7 @@ static int stkPoll(void)
 	return 0;
 }
 
+
 static int btnThread(SceSize args, void *argp)
 {
 	unsigned tick = 0;
@@ -477,21 +517,37 @@ static int btnThread(SceSize args, void *argp)
 			ksceKernelDelayThread(200000);
 			continue;
 		}
-		SceUInt32 w = 0;
-		if (ksceSysconGetControlsInfo(&w) >= 0) {
-			if (w != g_btn_word) {
-				g_btn_word = w;
-				g_btn_changed = ksceKernelGetSystemTimeWide();
-			}
-			g_btn_ok = 1;
+		if (g_sc_quiet) {
+			/* A suspend that was vetoed or abandoned may send no resume event;
+			 * a real one stops this thread with the CPU (after phase 0x4000),
+			 * so a minute of ticks here means the system is still running. */
+			if (++g_sc_quiet_ticks >= 60000) { g_sc_quiet_ticks = 0; g_sc_quiet = 0; }   /* 60 s: a game's save in phase 0x401 can take seconds */
+			ksceKernelDelayThread(1000);
+			continue;
 		}
-		/* Early sticks: every other tick (~2 ms apart) while Antilag is on and
-		 * a title is owned. Synchronous CmdExec with a stack packet, so no
-		 * packet of ours lingers in syscon's queue across a reboot (the static
-		 * and async forms both bricked, 2026-10-28/29; this stack form survived
-		 * repeated reboot cycles, 2026-10-29). */
-		if ((++tick & 1) == 0 && (g_adv_flags & FPSVITA_ADV_JIT))
-			stkPoll();
+		g_sc_quiet_ticks = 0;
+		g_sc_busy = 1;
+		__sync_synchronize();
+		if (!g_sc_quiet) {   /* the handler may have closed the gate between the check and the mark */
+			SceUInt32 w = 0;
+			int rr = ksceSysconGetControlsInfo(&w);
+			if (rr >= 0) {
+				if (w != g_btn_word) {
+					g_btn_word = w;
+					g_btn_changed = ksceKernelGetSystemTimeWide();
+				}
+				g_btn_ok = 1;
+			}
+			/* Early sticks: every other tick (~2 ms apart) while Antilag is on and
+			 * a title is owned. Synchronous CmdExec with a stack packet, so no
+			 * packet of ours lingers in syscon's queue across a reboot (the static
+			 * and async forms both bricked, 2026-10-28/29; this stack form survived
+			 * repeated reboot cycles, 2026-10-29). */
+			if ((++tick & 1) == 0 && (g_adv_flags & FPSVITA_ADV_JIT))
+				stkPoll();
+		}
+		__sync_synchronize();
+		g_sc_busy = 0;
 		ksceKernelDelayThread(1000);
 	}
 	return 0;
@@ -531,6 +587,7 @@ static int procExit(SceUID pid, SceProcEventInvokeParam1 *a2, int a3)
 { ownerGone(pid); return 0; }
 static int procKill(SceUID pid, SceProcEventInvokeParam1 *a2, int a3)
 { ownerGone(pid); return 0; }
+
 
 
 int __module_start(SceSize args, const void *argp)

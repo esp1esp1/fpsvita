@@ -161,6 +161,13 @@ it. The helper's Antilag adds those presses to the game's samples and stamps the
 change time, so INPUT stays a measurement. The only polling in the project. The word starts
 as all released and `FpsvitaButtons.status` reads `FPSVITA_BTN_NOSYSCON` until a read has
 succeeded (the helper inverts the word: a 0 would be every button down).
+Across sleep the thread is gated: the kernel's sysevent handler closes it at the first
+suspend event (spinning up to 20 ms for a command under way, in the thread-context phases
+only) and reopens it at late resume (`0x100000`); a suspend that is abandoned without a resume
+event reopens it after 60 s. Nothing in the loop may touch a file: SceIofilemgr's phase-1
+handler vetoes the suspend (`EAGAIN`) while any `ksceIo*` call, user or kernel, landed in the
+last 10 ms, and ScePower forces the power sequence after 21 s of vetoes, which ends with the
+console off.
 
 The helper's merge (`companion/btnmerge.h`, `tests/btnmerge.cpp`) runs on the game's side
 of SceCtrl, after every kernel plugin that reshapes the sample, so it trusts a physical bit

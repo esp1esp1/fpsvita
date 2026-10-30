@@ -34,6 +34,9 @@
 - ioplus is a documented requirement: game processes cannot read `ur0:data/fpsvita` without
   it, so the per-game line, the panel rate and the helper log never reached a game on a setup
   that lacks it (found on a Slim, 2026-10-29).
+- The kernel's controller-chip traffic (the 1 kHz button read and the stick poll) stops at
+  the first suspend event, waits out a command already under way, and starts again only once
+  the system is back (`0x100000`), so none of it is in flight while the console sleeps.
 
 ## v0.4.0 (2026-10-28)
 
