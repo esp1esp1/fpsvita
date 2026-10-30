@@ -147,6 +147,8 @@ static const int32_t fpsvita_softcap_cycle[] = {0, 20, 24, 25, 30, 40, 45, 50, 6
 #define FPSVITA_STATF_FLIPWORK   (1u << 7)  /* work_us is the flip-side work: the frame's own
                                              * time from its pacing wait to the flip. Titles with
                                              * no AddEntry (the PowerVR GLES stack) get it. */
+#define FPSVITA_STATF_BTN_NOSYSCON (1u << 8)  /* syscon presses off: no syscon word (PS TV) */
+#define FPSVITA_STATF_STICKS     (1u << 9)  /* early sticks: at least one axis trusted and delivering */
 
 typedef struct FpsvitaStats {
 	uint32_t fps_x10;       /* presents per second, times 10 */
@@ -164,6 +166,8 @@ typedef struct FpsvitaStats {
 	uint32_t miss;          /* presents about twice the target period (cap, Limiter, or the game's own rate) */
 	uint32_t low1_fps_x10;  /* 1% low: the slowest percent of the last 512 presents, times 10 (0: not yet) */
 	uint32_t btn_lead_us;   /* Antilag's syscon presses: how much newer than the sample, EMA (0: none yet) */
+	uint32_t btn_presses;   /* physical presses since launch (syscon down edges) */
+	uint32_t btn_early;     /* of those, delivered before SceCtrl's sample had them */
 	uint32_t seq;           /* bumps per push; 0 = nothing pushed yet */
 } FpsvitaStats;
 
@@ -179,6 +183,8 @@ typedef struct FpsvitaState {
 	int32_t  softcap;       /* fps, 0 off */
 	FpsvitaStats stats;
 	int32_t  panel_hz;      /* experimental panel refresh in force, 0 = stock 59.94 Hz */
+	uint32_t vcount;        /* dev kernels: the panel's current raster line (SceDsi +0x4C) for the
+	                         * owner while the display runs, else 0xffffffff */
 } FpsvitaState;
 
 /* Per-game `panel=<hz>` (experimental): OLED mode 0 only, see kernel/main.c */
@@ -212,12 +218,26 @@ FPSVITA_API void fpsvitaSetPanel(int32_t hz);   /* owner or the shell, while a t
  * a title is owned), when it last changed, and the kernel clock at the call so
  * the caller can move changed_at into its own clock. Owner only. */
 typedef struct FpsvitaButtons {
-	uint32_t raw;         /* ksceSysconGetControlsInfo word, released = 1 bits */
-	uint32_t pad;
+	uint32_t raw;         /* ksceSysconGetControlsInfo word, released = 1 bits (all 1s until read) */
+	uint32_t status;      /* 0: raw is live; else FPSVITA_BTN_*: leave the samples alone */
 	uint64_t changed_at;  /* kernel clock (ksceKernelGetSystemTimeWide) */
 	uint64_t now;         /* kernel clock at this call */
 } FpsvitaButtons;
+#define FPSVITA_BTN_NOSYSCON  2   /* no syscon word read yet, or none on this unit (PS TV) */
 FPSVITA_API int  fpsvitaGetButtons(FpsvitaButtons *out);
+/* The sticks as the syscon last reported them to the kernel's own poll
+ * (command 0x101 about every 4 ms while a title with Antilag is owned;
+ * SceCtrl sends it and 0x104 once per vblank): a ring of the newest reads,
+ * newest at (n - 1) % FPSVITA_STK_RING, kernel clock. Owner only. */
+#define FPSVITA_STK_RING 16
+typedef struct FpsvitaSticks {
+	uint64_t at[FPSVITA_STK_RING];   /* kernel clock at the read */
+	uint8_t  v[FPSVITA_STK_RING][4]; /* lx ly rx ry, bytes 4-7 of the reply */
+	uint32_t n;                      /* reads so far (0: none) */
+	int32_t  err;                    /* last syscon error, 0 none */
+	uint64_t now;                    /* kernel clock at this call */
+} FpsvitaSticks;
+FPSVITA_API int  fpsvitaGetSticks(FpsvitaSticks *out);
 
 static inline int32_t fpsvitaGetInterval(void)
 { FpsvitaState s; s.interval = FPSVITA_INTERVAL_OFF; fpsvitaGetState(&s, sizeof(s)); return s.interval; }

@@ -14,6 +14,9 @@
 #                key preservation, refusal to truncate, shell->helper handoff
 #   autodetect - the inject auto-detection state machine in companion/main.c
 #                across realistic per-title frame patterns
+#   btnmerge   - Antilag's syscon-press merge (companion/btnmerge.h): which
+#                buttons may go early, release hiding, remapper/turbo/sticky
+#                and injected-press behaviour
 #
 # Usage: bash tests/run.sh
 set -u
@@ -76,6 +79,12 @@ run_one autodetect
 # --- flipwork: the CPU estimate for titles that present without AddEntry ---
 extract_range "$ROOT/companion/main.c" '^static void noteFlipWork' > flipwork.inc || exit 1
 run_one flipwork
+
+# --- btnmerge: the syscon-press state machine (a header, included directly) ---
+run_one btnmerge
+
+# --- stkmerge: the early-sticks gate (a header, included directly) ---
+run_one stkmerge
 
 printf '\n'
 if [ "$rc" -eq 0 ]; then echo "ALL SUITES PASSED"; else echo "FAILURES (see above)"; fi

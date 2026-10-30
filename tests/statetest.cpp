@@ -58,7 +58,7 @@ static int sceClibSnprintf(char *b, size_t n, const char *f, ...) {
 static int32_t g_globalInterval = -1;
 static int32_t g_hudMode = 0, g_hudPos = 0;
 static int32_t g_lowLatency = 0, g_jit = 0, g_softcap = 0, g_tear = 0, g_advShown = 0, g_rateLog = 0;
-static int32_t g_panelModes = 0, g_panelAuto = 0, g_tips = 1, g_syscon = 1;
+static int32_t g_panelModes = 0, g_panelAuto = 0, g_tips = 1, g_syscon = 1, g_sticks = 1;
 static bool fpsvitaPanelUi(void) { return g_panelModes != 0; }
 #define FPSVITA_ADV_LOWLAT (1 << 0)
 #define FPSVITA_ADV_JIT    (1 << 1)
@@ -78,7 +78,7 @@ struct Impose {
 
 /* companion side */
 namespace comp {
-typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int32_t pg_vsync; int pg_read; int32_t pg_panel; int log; int syscon; int panelmodes; } HelperConfig;
+typedef struct HelperConfig { int32_t pergame, interval, softcap; int inject, autodetect, lowlatency, jit, tear; int32_t pg_ll, pg_jit, pg_sc, pg_tear; int32_t pg_vsync; int pg_read; int32_t pg_panel; int log; int syscon; int sticks; int panelmodes; } HelperConfig;
 #include "comp_io.inc"
 }
 
@@ -254,6 +254,12 @@ int main(){
     expect("no syscon= -> 1 (Antilag's syscon presses on)", RGC("PCSE00411")==1 && c.syscon==1 && g_syscon==1);
     putcfg("limit=2\nsyscon=0\n");
     expect("shell reads syscon=0", readGlobals(&iv,&inj,&ad,&hud,&pos) && g_syscon==0);
+
+    put("");
+    expect("no sticks= -> 1 (early sticks on)", RGC("PCSE00411")==1 && c.sticks==1 && g_sticks==1);
+    putf(FPSVITA_CONFIG_FILE, "limit=-1\nsticks=0\n");
+    expect("shell reads sticks=0", readGlobals(&iv,&inj,&ad,&hud,&pos) && g_sticks==0);
+    putf(FPSVITA_CONFIG_FILE, "limit=-1\n"); g_sticks = 1;
     { Impose o=mk("",2,0,1); o.PersistState(); }
     expect("config rewrite keeps syscon=0", strstr(getcfg(),"syscon=0\n")!=NULL);
     expect("helper reads syscon=0", RGC("PCSE00411")==1 && c.syscon==0);

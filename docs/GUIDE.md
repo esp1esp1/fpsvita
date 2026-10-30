@@ -172,11 +172,24 @@ the syscon, the fresh poll, which works at any limit, and a sleep that only runs
 
 - *Syscon presses.* The system samples the controller once per refresh, but the button chip
   reports far more often. On every read, fpsvita adds the buttons the chip says are down to
-  the sample the game gets, so a press reaches the game about 10 ms sooner at 60 Hz (up to a
-  whole refresh, 17 ms; up to 25 ms at a 40 Hz [panel refresh](#panel-refresh)).
-  Presses only; releases, sticks and touch keep the normal sampling. INPUT counts these
-  presses from the moment the chip saw them. `syscon=0` in `config.txt` turns this part off.
-  Not in the lite build, which has no kernel module to read the chip.
+  the sample the game gets, so a press that lands between the system's sample and the game's
+  read reaches the game a whole refresh sooner (17 ms at 60 Hz, 25 ms at a 40 Hz
+  [panel refresh](#panel-refresh)); the overlay's `BTN` share says how many do, and the
+  release of such a press reaches the game as early. Sticks and touch keep the normal
+  sampling. A button qualifies once one press of it has reached the game as itself, so the
+  first press of each button in a session goes at the normal time; a button a remapper
+  consumes, turns into turbo or holds sticky never qualifies, and presses injected by another
+  plugin or tool are left alone (checked with reVita's remap, turbo and sticky rules; a sticky
+  button's first use in a session shows one release about 50 ms early). INPUT counts these presses from the moment
+  the chip saw them. `syscon=0` in `config.txt` turns this part off. Not in the lite build,
+  which has no kernel module to read the chip, and not on a PS TV, which has no chip.
+- *Early sticks.* The analog sticks are read the same way: the chip is polled every couple of
+  milliseconds and the fresher reading is handed to the game during stick motion, up to a
+  refresh ahead of the system's once-per-refresh sample. fpsvita first learns how the system
+  scales each stick and only acts once its guess matches, so a stick plugin (AnalogsEnhancer)
+  or a game that reads the sticks in digital mode is left untouched. The overlay's ANTI-LAG
+  row shows `STK` when it is in effect. `sticks=0` in `config.txt` turns this part off; same
+  build and hardware limits as the presses.
 - *Fresh poll.* When the sample the game just read is nearly a refresh old, the next one
   lands within about 2 ms. fpsvita reads again for up to 2.5 ms and hands the game the new
   sample.
@@ -254,8 +267,9 @@ at once, with seams.
 
 ### Tearing
 
-**What it does.** Uncapped, plus every flip takes effect at once instead of at the next
-vblank. The newest frame reaches the screen without waiting.
+**What it does.** Uncapped, plus every flip takes effect at the next scanline instead of
+at the next vblank (the display driver's "next hsync" timing). The newest frame reaches the
+screen without waiting.
 
 **When it helps.** Games running above 60 fps, or at Limiter rates, where waiting for the
 vblank delays each frame. On Doom64EX's intro, the game's wait for a frame to be shown
@@ -310,11 +324,14 @@ the game from the chip's own report rather than the refresh-locked sample.
 
 ### Auto
 
-Tick **Auto** on the Panel row (`panelauto=1`) and fpsvita keeps the game at the highest step
-it holds, the way some Switch homebrew fakes a variable refresh rate: 60, 50, 45 or 40 Hz with
-one frame per refresh, or a 30fps limit at the normal refresh as the floor (steady 33 ms
-frames with input still sampled 60 times a second; never 20). What you pick in the FPS row is
-the ceiling: at `45Hz`, Auto ranges from 30 up to 45. It runs while the FPS row is at `60fps` or one of the refresh-rate entries, or at
+Tick **Auto** on the Panel row (`panelauto=1`; the box only shows with Modes ticked, and
+unticking Modes clears it) and fpsvita keeps the game at the highest step
+it holds, the way some Switch homebrew fakes a variable refresh rate. The steps are 60, 55,
+50, 48, 45 or 40 Hz with one frame per refresh, then 30, 28, 26, 24, 22 or 20 fps as the 30fps
+limit at a panel of twice that rate (60 down to 40 Hz), so every frame is shown for exactly
+two refreshes instead of alternating two and three the way a game that cannot hold 30 does
+at a 30 limit. What you pick in the FPS row is the ceiling: at `45Hz`, Auto ranges from 20
+up to 45. It runs while the FPS row is at `60fps` or one of the refresh-rate entries, or at
 `Default` on a game whose own rate is 60 (`OG:60` on the overlay), with Modes on, on a game
 the [compatibility list](compatibility-list.md) does not mark speed-tied. A 30fps or 20fps
 limit, Uncapped, the Limiter, and Default on a 30-native game leave it idle. Every
@@ -322,17 +339,18 @@ limit, Uncapped, the Limiter, and Default on a 30-native game leave it idle. Eve
 or misses 3% of its frames at, for two checks in a row (so a level load does not count), is
 dropped straight to the highest rate the game could clear (the measured frame rate, with the doubled frames credited back). After 10 seconds clean it tries the next rate up; a try that fails within 8 seconds
 goes back to the rate it came from and doubles the wait before that rate is tried again (up
-to 2 minutes; each rate has its own wait, and a minute clean halves them). From the 30 floor
-the wait is capped at 40 seconds, so a game does not sit at 30 long after its 30 fps menus. The overlay's LIMIT row reads
-`AUTO 45 @45HZ`, or `AUTO 30 @60HZ` at the floor, while it is in charge, and LAST ignores its
+to 2 minutes; each rate has its own wait, and a minute clean halves them). From the two-refresh
+steps the wait is capped at 40 seconds, so a game does not sit at 30 long after its 30 fps menus. The overlay's LIMIT row reads
+`AUTO 45 @45HZ`, or `AUTO 26 @52HZ` on a two-refresh step, while it is in charge, and LAST ignores its
 switches. Unticking Auto gives the FPS row's own limit back. While Auto is in charge the
 quick menu's FPS row shows your own pick, and Save stores that, not the step Auto is at. It works with the
 overlay off. Save still stores the rate in force at the time.
 
-**Limits.** Tested on the OLED Vita (PCH-1000), firmware 3.65, including sleep and resume
-while a game runs at a panel rate and switching rates from the quick menu during play. The
-Slim (PCH-2000) drives its LCD with the same timing table and users report 40 Hz working
-there with no flicker and normal game speed; it is offered on both. If the screen flickers or goes black, pick another FPS entry, quit the game
+**Limits.** Tested on the OLED Vita (PCH-1000, firmware 3.65), including sleep and
+resume while a game runs at a panel rate and switching rates from the quick menu during play,
+and on a Slim (PCH-2000, firmware 3.65), whose LCD is driven from its own timing entry: it
+held 50 down to 30 Hz with the same frame cadence as the OLED, measured and on camera.
+Below 30 the picture breaks up on both panels, which is why 30 is the floor. If the screen flickers or goes black, pick another FPS entry, quit the game
 or reboot, and please [report](#reporting-a-game) what you saw. A PS TV has no screen of its
 own: the entries are not offered there, and fpsvita leaves any display it does not recognise
 alone. An entry the console refuses reads `40Hz n/a`. Lite
@@ -405,10 +423,15 @@ the last 512 frames. Together they say whether the game holds the rate, which FP
 average, does not: a panel-refresh or Limiter setting is holding when MISS stays near 0
 and the 1% low sits near the rate.
 
-ANTI-LAG reads `OFF`, `ON / 0` (on, not sleeping now) or `16.6 ms / 0` (on, sleeping that
+ANTI-LAG reads `OFF`, `ON / 0` (on, not sleeping now) or `16.6 ms/0` (on, sleeping that
 long each frame). The number counts frames that missed their slot while
-sleeping. `BTN -9.6` follows once a button press has come from the syscon: how much newer
-than the refresh-locked sample those presses were, on average.
+sleeping. `BTN 12%` follows once you have pressed a button: the share of your presses so far
+that reached the game before the refresh-locked sample had them. Each of those gained up to
+a refresh. The share depends on where the game's read lands relative to the system's
+sample: Doom64EX measured 10% at 60 fps, where it reads right after the sample, and 18% at
+a 30 limit in a run where the sleep had backed off after missed slots. More presses should
+gain while the sleep is in force, since it moves the read to the end of the frame; that
+case is not measured yet.
 
 LOW LAT reads `ON`, `OFF`, `ON (GAME'S OWN)` (the game uses a one-frame queue itself),
 `RESTART GAME` (ticked after the game set up its graphics, applies at the next launch),
@@ -469,6 +492,12 @@ config taiHEN actually reads (`ux0:tai/config.txt` wins when it exists).
 
 **The Vita's shell fails at boot.**
 See [recovery](../README.md#conflicts-and-recovery) in the README.
+
+**The rows are there but a game ignores its saved line, `panel=` does nothing and
+`helper.log` has no line for it.**
+The game cannot reach `ur0:data/fpsvita`: it needs ioplus (`ur0:tai/ioplus.skprx` under
+`*KERNEL`). Seen on a Slim set up without it; the OLED setups that fpsvita grew up on all had
+it.
 
 **The game runs too fast or in slow motion.**
 Its speed follows the frame rate. Set FPS to `Default` and press Save. Report it so it can go

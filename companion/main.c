@@ -31,6 +31,9 @@
 #include <taihen.h>
 
 #include "../common/fpsvita_common.h"
+#include "btnmerge.h"
+#include "stkmerge.h"
+#define FPSVITA_COMPAT_DEFINE   /* single TU: define the table here */
 #include "../shell/compat_data.h"
 #ifdef FPSVITA_LITE
 #include "lite.h"
@@ -196,6 +199,7 @@ typedef struct HelperConfig {
 	int32_t pg_panel;     /* per-game "panel=<hz>" (experimental), 0 none */
 	int     log;          /* "log=1": rate lines in helper.log */
 	int     syscon;       /* "syscon=0": Antilag without the syscon presses */
+	int     sticks;       /* "sticks=0": Antilag without the early analog sticks */
 	int     panelmodes;   /* "panelmodes=1" (or the older "experimental=1"): per-game panel= applies */
 } HelperConfig;
 
@@ -535,8 +539,15 @@ static int sceDisplayWaitSetFrameBufCB_patched(void)
 
 static int s_jitEnabled = 0;    /* antilag=1: fresh poll, the whole-vblank sleep, syscon presses */
 static int s_sysconOn = 1;      /* config.txt syscon= (default 1): the syscon presses part of Antilag */
+static int s_sticksOn = 1;      /* config.txt sticks= (default 1): the early analog sticks part of Antilag */
 static volatile uint32_t s_btn_diff, s_btn_total;   /* reads where the syscon was ahead of the newest sample */
 static volatile int32_t  s_btn_lead_ema;            /* on those reads: sample age minus press age, us */
+static BtnMerge s_btn;                              /* which bits the syscon may deliver early */
+static uint64_t s_btn_changed_last;                 /* the kernel word's change time at the previous read */
+static volatile uint32_t s_btn_status;              /* FpsvitaButtons.status from the last read */
+static StkMerge s_stk;                              /* early sticks: per-axis learned scale and trust */
+static uint64_t s_stk_last_ts;                      /* newest sample stamp last learned from */
+static volatile uint32_t s_stk_deliver_last;        /* axes delivered on the last read (bitmask) */
 static int32_t s_softcap = 0;   /* `softcap=<fps>`: time-based cap used in Uncapped mode */
 static volatile uint32_t s_softcap_applied;
 /* Limiter schedule: the next release time, a period after the previous
@@ -721,42 +732,111 @@ static uint32_t sysconToCtrl(uint32_t b)
 	return m;
 }
 
+
+/* Early sticks: hand the game a fresher analog reading than SceCtrl's
+ * once-per-vblank sample. The kernel polls the syscon every few ms
+ * (fpsvitaGetSticks); SceCtrl's sample lags up to a vblank. `koff` moves the
+ * sample's process-clock stamp into the kernel clock to pair it with the ring
+ * (nearest read = learn SceCtrl's transform; newest read = deliver). Per-axis
+ * gate in companion/stkmerge.h keeps it off until the learned scale matches
+ * what SceCtrl reports, so a stick-reshaping plugin (AnalogsEnhancer) or
+ * digital sampling simply never trusts and nothing changes. Sticks are the
+ * same bytes in positive and negative buffers, so `neg` does not matter here.
+ * Inert without the kernel poll, so release builds deliver nothing until it is
+ * unfenced. */
+static void stkDeliver(SceCtrlData *pad, int r, uint64_t koff, uint64_t know)
+{
+	FpsvitaSticks ks;
+	uint32_t cnt, newest, mask = 0;
+	int i, raw_fresh;
+	const uint8_t *rawNow;
+	static int s_stk_init;
+	if (!s_stk_init) { stkMergeInit(&s_stk); s_stk_init = 1; }
+	if (r <= 0 || fpsvitaGetSticks(&ks) < 0 || ks.n == 0) { s_stk_deliver_last = 0; return; }
+	cnt = ks.n < FPSVITA_STK_RING ? ks.n : FPSVITA_STK_RING;
+	newest = (ks.n - 1) % FPSVITA_STK_RING;
+	rawNow = ks.v[newest];
+	raw_fresh = (int64_t)(know - ks.at[newest]) < (int64_t)g_vblank_us;
+	/* Learn once per new SceCtrl sample, from the raw read nearest its time. */
+	if (pad[r - 1].timeStamp != s_stk_last_ts) {
+		uint64_t want = pad[r - 1].timeStamp + koff;
+		int best = -1; int64_t bestd = 0; uint32_t j;
+		s_stk_last_ts = pad[r - 1].timeStamp;
+		for (j = 0; j < cnt; j++) {
+			int64_t d = (int64_t)(ks.at[j] - want); if (d < 0) d = -d;
+			if (best < 0 || d < bestd) { best = (int)j; bestd = d; }
+		}
+		if (best >= 0 && bestd < (int64_t)g_vblank_us) {
+			const uint8_t *rs = ks.v[best];
+			uint8_t sm[4]; int a;
+			sm[0] = pad[r - 1].lx; sm[1] = pad[r - 1].ly; sm[2] = pad[r - 1].rx; sm[3] = pad[r - 1].ry;
+			for (a = 0; a < 4; a++) stk_learn(&s_stk, a, rs[a], sm[a]);
+		}
+	}
+	for (i = 0; i < r && i < 64; i++) {
+		uint8_t out[4]; int m;
+		out[0] = pad[i].lx; out[1] = pad[i].ly; out[2] = pad[i].rx; out[3] = pad[i].ry;
+		m = stk_deliver(&s_stk, rawNow, raw_fresh, out);
+		if (m) { pad[i].lx = out[0]; pad[i].ly = out[1]; pad[i].rx = out[2]; pad[i].ry = out[3]; }
+		mask |= m;
+	}
+	s_stk_deliver_last = mask;
+}
+
 /* neg: the sample is a sceCtrl*Negative buffer (bits clear = pressed). */
 static inline void noteCtrlOut(SceCtrlData *pad, int r, int neg)
 {
 	if (r <= 0) return;
 	uint64_t ts = newestStamp(pad, r);
 	/* Antilag's syscon presses: add the buttons the syscon says are down
-	 * right now to every returned sample. SceCtrl samples the syscon once
-	 * per vblank; the kernel's word is 10 ms ahead on average (17 ms max,
-	 * one vblank; up to 25 ms at a 40 Hz panel). Presses only: a release
-	 * still waits for the vblank sample, which also keeps presses from other
-	 * sources (a remote-control tool's scripted ones) alive. The syscon reports
-	 * released buttons as 1s. The press is stamped with the time the word
-	 * changed, moved into the process clock from the kernel clock the same
-	 * call returned, so INPUT measures what the game really got. */
-	if (s_jitEnabled && s_sysconOn) {
+	 * right now to every returned sample, and drop the ones it says are up.
+	 * SceCtrl samples the syscon once per vblank; the kernel's word is 10 ms
+	 * ahead on average (17 ms max, one vblank; up to 25 ms at a 40 Hz panel).
+	 * The syscon reports released buttons as 1s. The press is stamped with
+	 * the time the word changed, moved into the process clock from the kernel
+	 * clock the same call returned, so INPUT measures what the game really
+	 * got. The kernel's status says when not to: no syscon word has been
+	 * read yet (a PS TV). */
+	if (s_jitEnabled && (s_sysconOn || s_sticksOn)) {
 		FpsvitaButtons kb;
 		if (fpsvitaGetButtons(&kb) >= 0) {
-			uint32_t m = sysconToCtrl(~kb.raw);
-			uint32_t newest = neg ? ~pad[r - 1].buttons : pad[r - 1].buttons;
-			int i;
-			s_btn_total++;
-			if (m & ~newest & FPSVITA_SYSCON_GAME_MASK) {
-				/* A press the sample does not have yet: it is newer than the sample. */
+			s_btn_status = kb.status;
+			if (kb.status == 0) {
 				uint64_t pnow = sceKernelGetProcessTimeWide();
-				uint64_t age_k = kb.now - kb.changed_at;
-				uint64_t stamp = age_k < 1000000ull ? pnow - age_k : 0;
-				s_btn_diff++;
-				if (stamp > ts) {
-					int32_t lead = clampAge((int64_t)(stamp - ts));
-					s_btn_lead_ema += (lead - s_btn_lead_ema) >> 3;
-					ts = stamp;
+				if (s_sysconOn) {
+					uint32_t m = sysconToCtrl(~kb.raw) & FPSVITA_SYSCON_GAME_MASK;
+					uint32_t newest = neg ? ~pad[r - 1].buttons : pad[r - 1].buttons;
+					uint32_t add, clear;
+					int i;
+					/* Which bits to deliver early and which stale presses to hide:
+					 * companion/btnmerge.h. A bit qualifies once a press of it has
+					 * reached the game as itself, so a remapper's consumed buttons,
+					 * turbo and sticky holds and injected presses stay theirs
+					 * (verified under reVita 1.0.8 on 2026-10-28). */
+					btnMerge(&s_btn, m, newest & FPSVITA_SYSCON_GAME_MASK,
+					         kb.changed_at != s_btn_changed_last, (uint32_t)pnow,
+					         4u * g_vblank_us + 10000u, &add, &clear);
+					s_btn_changed_last = kb.changed_at;
+					s_btn_total++;
+					if (add & ~newest) {
+						/* A press the sample does not have yet: it is newer than the sample. */
+						uint64_t age_k = kb.now - kb.changed_at;
+						uint64_t stamp = age_k < 1000000ull ? pnow - age_k : 0;
+						s_btn_diff++;
+						if (stamp > ts) {
+							int32_t lead = clampAge((int64_t)(stamp - ts));
+							s_btn_lead_ema += (lead - s_btn_lead_ema) >> 3;
+							ts = stamp;
+						}
+					}
+					for (i = 0; i < r && i < 64; i++) {
+						if (neg) pad[i].buttons = (pad[i].buttons & ~add) | clear;
+						else     pad[i].buttons = (pad[i].buttons | add) & ~clear;
+					}
 				}
-			}
-			for (i = 0; i < r && i < 64; i++) {
-				if (neg) pad[i].buttons &= ~m;
-				else     pad[i].buttons |= m;
+				/* Early sticks: own toggle (sticks=), the same kernel-clock offset. */
+				if (s_sticksOn)
+					stkDeliver(pad, r, kb.now - pnow, kb.now);
 			}
 		}
 	}
@@ -1126,13 +1206,18 @@ static void pushStats(uint32_t now, const FpsvitaState *stIn)
 	                | (submitHooked() ? FPSVITA_STATF_ADDENTRY : 0)
 	                | (s_tearWanted && s_tearOk ? FPSVITA_STATF_TEAR : 0)
 	                | (s_gxmInitSeen ? FPSVITA_STATF_GXM_INIT : 0)
-	                | (!s_work_ema && s_flip_work_ema ? FPSVITA_STATF_FLIPWORK : 0);
+	                | (!s_work_ema && s_flip_work_ema ? FPSVITA_STATF_FLIPWORK : 0)
+	                | (s_btn_status == FPSVITA_BTN_NOSYSCON ? FPSVITA_STATF_BTN_NOSYSCON : 0)
+	                | ((s_stk.trust[0] | s_stk.trust[1] | s_stk.trust[2] | s_stk.trust[3])
+	                   ? FPSVITA_STATF_STICKS : 0);
 	st.jit_missed   = s_jit_missed;
 	st.sample_age_us = (uint32_t)(s_ts_out_ema > 0 ? s_ts_out_ema : 0);
 	st.presents     = frames;
 	st.miss         = s_miss_dbl;
 	st.low1_fps_x10 = low1FpsX10(frames);
 	st.btn_lead_us  = (uint32_t)(s_btn_lead_ema > 0 ? s_btn_lead_ema : 0);
+	st.btn_presses  = s_btn.presses;
+	st.btn_early    = s_btn.early;
 	st.seq          = ++s_stats_seq;
 	fpsvitaSetStats(&st);
 }
@@ -1407,6 +1492,7 @@ static int lineIsGlobalKey(const char *p, int linelen)
 	    || (linelen > 7  && sceClibStrncmp(p, "hudpos=",  7) == 0)
 	    || (linelen > 4  && sceClibStrncmp(p, "log=",     4) == 0)
 	    || (linelen > 7  && sceClibStrncmp(p, "syscon=",  7) == 0)
+	    || (linelen > 7  && sceClibStrncmp(p, "sticks=",  7) == 0)
 	    || (linelen > 13 && sceClibStrncmp(p, "experimental=", 13) == 0)
 	    || (linelen > 11 && sceClibStrncmp(p, "panelmodes=", 11) == 0)
 	    || (linelen > 10 && sceClibStrncmp(p, "panelauto=", 10) == 0)
@@ -1482,6 +1568,8 @@ static void parseConfigLines(char *buf, int bytes, const char *titleid,
 					cfg->log = (int)sceClibStrtoll(p + 4, NULL, 10) ? 1 : 0;
 				else if (linelen > 7 && sceClibStrncmp(p, "syscon=", 7) == 0)
 					cfg->syscon = (int)sceClibStrtoll(p + 7, NULL, 10) ? 1 : 0;
+				else if (linelen > 7 && sceClibStrncmp(p, "sticks=", 7) == 0)
+					cfg->sticks = (int)sceClibStrtoll(p + 7, NULL, 10) ? 1 : 0;
 				else if (linelen > 13 && sceClibStrncmp(p, "experimental=", 13) == 0)
 					cfg->panelmodes = (int)sceClibStrtoll(p + 13, NULL, 10) ? 1 : 0;
 				else if (linelen > 11 && sceClibStrncmp(p, "panelmodes=", 11) == 0)
@@ -1549,6 +1637,7 @@ static __attribute__((noinline)) void readGameConfig(const char *titleid,
 	cfg->pg_panel = 0;
 	cfg->log = 0;
 	cfg->syscon = 1;
+	cfg->sticks = 1;
 	cfg->panelmodes = 0;
 
 	/* One buffer size shared with the shell (FPSVITA_STATE_BUF), so the
@@ -1670,56 +1759,79 @@ static void copyConfigValue(char *dst, int cap, const char *p, const char *eol)
 	dst[n] = '\0';
 }
 
+/* One line of VitaGrafix config. Returns 1 once the title's section has been
+ * read and left, so the caller can stop. `*in` tracks being inside it. */
+static int vgLine(const char *p, int len, const char *titleid, int tidlen,
+                  int *in, int *enabled, int *fps, char *ib, char *fb)
+{
+	while (len > 0 && (p[len - 1] == '\r' || p[len - 1] == ' '))
+		len--;
+	if (len > 2 && p[0] == '[' && p[len - 1] == ']') {
+		int was = *in;
+		*in = (len - 2 == tidlen && sceClibStrncmp(p + 1, titleid, tidlen) == 0);
+		return was && !*in;   /* left our section: done */
+	}
+	if (!*in)
+		return 0;
+	if (len > 8 && sceClibStrncmp(p, "ENABLED=", 8) == 0)
+		*enabled = (int)sceClibStrtoll(p + 8, NULL, 10);
+	else if (len > 4 && sceClibStrncmp(p, "FPS=", 4) == 0)
+		*fps = (p[4] == 'O' || p[4] == 'o') ? -1 : (int)sceClibStrtoll(p + 4, NULL, 10);
+	else if (len > 3 && sceClibStrncmp(p, "IB=", 3) == 0)
+		copyConfigValue(ib, 16, p + 3, p + len);
+	else if (len > 3 && sceClibStrncmp(p, "FB=", 3) == 0)
+		copyConfigValue(fb, 16, p + 3, p + len);
+	return 0;
+}
+
+/* Stream the VitaGrafix config a chunk at a time rather than loading it whole:
+ * the file can be large (hundreds of titles) but only one short section
+ * matters, so a small chunk and a short line buffer replace a 16 KB static. */
 static void readVitaGrafixEnv(const char *titleid, int *enabled, int *fps,
                               char *ib, char *fb)
 {
-	static char buf[16384];
 	static const char *const paths[2] = {
 		"ux0:data/VitaGrafix/config.txt",
 		"ur0:data/VitaGrafix/config.txt",
 	};
-	int bytes = -1;
-	int i;
+	char chunk[256], line[96];
+	int li = 0, in = 0, done = 0, over = 0, i, tidlen = 0;
+	SceUID fd = -1;
 
-	for (i = 0; i < 2 && bytes <= 0; i++)
-		bytes = readFileInto(paths[i], buf, sizeof(buf));
-
+	while (titleid[tidlen] && tidlen < 31)
+		tidlen++;
 	*enabled = -1;
 	*fps = -1;
 	ib[0] = fb[0] = '\0';
-	if (bytes <= 0)
+
+	for (i = 0; i < 2 && fd < 0; i++)
+		fd = sceIoOpen(paths[i], SCE_O_RDONLY, 0);
+	if (fd < 0)
 		return;
 
-	int tidlen = 0;
-	while (titleid[tidlen] && tidlen < 31)
-		tidlen++;
-
-	char *p = buf;
-	int in = 0;
-	while (*p && p < buf + bytes) {
-		char *eol = p;
-		while (*eol && *eol != '\n' && eol < buf + bytes)
-			eol++;
-		int len = (int)(eol - p);
-
-		if (len > 2 && p[0] == '[' && p[len - 1] == ']') {
-			in = (len - 2 == tidlen
-			      && sceClibStrncmp(p + 1, titleid, tidlen) == 0);
-		} else if (in) {
-			if (len > 8 && sceClibStrncmp(p, "ENABLED=", 8) == 0)
-				*enabled = (int)sceClibStrtoll(p + 8, NULL, 10);
-			else if (len > 4 && sceClibStrncmp(p, "FPS=", 4) == 0)
-				*fps = (p[4] == 'O' || p[4] == 'o') ? -1
-				     : (int)sceClibStrtoll(p + 4, NULL, 10);
-			else if (len > 3 && sceClibStrncmp(p, "IB=", 3) == 0)
-				copyConfigValue(ib, 16, p + 3, eol);
-			else if (len > 3 && sceClibStrncmp(p, "FB=", 3) == 0)
-				copyConfigValue(fb, 16, p + 3, eol);
+	for (;;) {
+		int n = sceIoRead(fd, chunk, sizeof(chunk)), c;
+		if (n <= 0)
+			break;
+		for (c = 0; c < n && !done; c++) {
+			char ch = chunk[c];
+			if (ch == '\n') {
+				if (!over)
+					done = vgLine(line, li, titleid, tidlen, &in, enabled, fps, ib, fb);
+				li = 0;
+				over = 0;
+			} else if (li < (int)sizeof(line) - 1) {
+				line[li++] = ch;    /* a key we care about fits; longer lines are truncated */
+			} else {
+				over = 1;
+			}
 		}
-
-		p = (*eol == '\n') ? eol + 1 : eol;
-		if (p == eol) break;
+		if (done)
+			break;
 	}
+	if (!done && li > 0 && !over)
+		vgLine(line, li, titleid, tidlen, &in, enabled, fps, ib, fb);
+	sceIoClose(fd);
 }
 
 static void logEnvironment(void)
@@ -1994,6 +2106,7 @@ int module_start(SceSize argc, const void *args)
 	             || (compatFlagsFor(s_titleid) & FPSVITA_COMPAT_NOINPUT);
 	s_rateLog = s_cfg.log;
 	s_sysconOn = s_cfg.syscon;
+	s_sticksOn = s_cfg.sticks;
 #ifdef FPSVITA_LITE
 	/* No shell to seed the globals: this process is its own kernel. */
 	fpsvitaSetInterval(s_cfg.interval);

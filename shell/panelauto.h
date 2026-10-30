@@ -6,9 +6,11 @@ namespace fpsvita {
 
 /*
  * Panel auto (`panelauto=1`, the Panel row's Auto box): a governor that
- * keeps the game at the highest step of 60, 50, 45, 40 (panel rates, one
- * frame per refresh) and 30 (the 30fps limit at the stock refresh) it holds, the "VRR" Switch homebrew does with its
- * display clocks. Engaged while the FPS row is at 60fps or one of the
+ * keeps the game at the highest step it holds: 60, 55, 50, 48, 45, 40 (panel
+ * rates, one frame per refresh), then 30, 28, 26, 24, 22, 20 (the 30fps
+ * interval at a panel of twice the rate: every frame shown for exactly two
+ * refreshes), the way the "VRR" Switch homebrew does with its display
+ * clocks. Engaged while the FPS row is at 60fps or one of the
  * refresh-rate entries, or at Default on a 60-native game, with Modes on,
  * the title not speed-tied and a panel to drive. Fed by the stats push from Hud::Update (the shell asks
  * for the push with FPSVITA_HUD_STATS even with the overlay off).
@@ -17,7 +19,7 @@ namespace fpsvita {
  * its frames at, straight to the highest rate the measured fps clears.
  * Up: one step after a clean streak of probeWait (10 s, doubled each time
  * a probe fails within 8 s, up to 2 min, halved after a minute clean).
- * The user's pick in the FPS row is the ceiling: Auto ranges from 30 up to it.
+ * The user's pick in the FPS row is the ceiling: Auto ranges from 20 up to it.
  */
 class PanelAuto
 {

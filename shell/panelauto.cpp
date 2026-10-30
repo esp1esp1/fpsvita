@@ -16,28 +16,53 @@ namespace fpsvita {
 
 static bool     s_active;
 static uint32_t s_title[3];
-static int32_t  s_rate;          /* 60, 50, 45, 40 or 30: the step in force last seen */
-static int32_t  s_ceiling;       /* the user's pick in the FPS row: never probed above */
+static int32_t  s_rate;          /* the step in force last seen, as the fps it gives (60..40, 30..20) */
+static int32_t  s_ceiling;       /* the user's pick in the FPS row (as fps): never probed above */
 static int32_t  s_base;          /* the user's interval under the panel steps: 60fps or Default */
-static bool     s_atThirty;      /* the 30 step (a 30fps limit at the stock refresh) is ours */
+static bool     s_ours2;         /* the 30fps interval in force is ours (a 2x step) */
 static uint32_t s_lastSeq;
 static uint64_t s_winStart, s_clean, s_lastUp, s_lastOwn;
-static uint64_t s_probeWait[5];  /* per step probed: doubled when a probe of that step fails */
+static uint64_t s_probeWait[12]; /* per step probed: doubled when a probe of that step fails */
 static int32_t  s_goodRate;      /* the rate an up-probe left: where a failed probe returns to */
 static int      s_badWins;       /* consecutive windows the rate was not held */
 static uint32_t s_winN, s_presents0, s_miss0;
 static uint64_t s_fpsSum;
 
-/* The ladder, top to bottom. 30 is the 30fps limit at the stock refresh
- * (steady 33 ms frames, input still sampled at 60 Hz), not a 30 Hz panel. */
-static const int32_t s_steps[] = { 60, 50, 45, 40, 30 };
+/* The ladder, top to bottom, as the frame rate each step gives. The 1x tier
+ * is a panel rate with one frame per refresh; the 2x tier is the 30fps
+ * interval (two refreshes per frame) at a panel of twice the rate, so a
+ * game that holds 26 shows every frame for exactly two refreshes at 52 Hz
+ * instead of alternating two and three at a 30 limit (the integer-multiple
+ * rule Horizon-OC uses for targets under its panel floor). 48 is Sony's own
+ * second OLED mode (2 x 23.976). Never a 20 at 60: the 2x tier stops at 40 Hz. */
+typedef struct { int32_t fps; int32_t interval; int32_t hz; } PaStep;
+static const PaStep s_steps[] = {
+	{ 60, FPSVITA_INTERVAL_60FPS, 60 }, { 55, FPSVITA_INTERVAL_60FPS, 55 },
+	{ 50, FPSVITA_INTERVAL_60FPS, 50 }, { 48, FPSVITA_INTERVAL_60FPS, 48 },
+	{ 45, FPSVITA_INTERVAL_60FPS, 45 }, { 40, FPSVITA_INTERVAL_60FPS, 40 },
+	{ 30, FPSVITA_INTERVAL_30FPS, 60 }, { 28, FPSVITA_INTERVAL_30FPS, 56 },
+	{ 26, FPSVITA_INTERVAL_30FPS, 52 }, { 24, FPSVITA_INTERVAL_30FPS, 48 },
+	{ 22, FPSVITA_INTERVAL_30FPS, 44 }, { 20, FPSVITA_INTERVAL_30FPS, 40 },
+};
 #define PA_STEPS ((int32_t)(sizeof(s_steps) / sizeof(s_steps[0])))
+#define PA_FLOOR (s_steps[PA_STEPS - 1].fps)
+static_assert(sizeof(s_probeWait) / sizeof(s_probeWait[0]) == (size_t)PA_STEPS, "one probe wait per step");
 
-static int32_t stepIdx(int32_t hz)
+static int32_t stepIdx(int32_t fps)
 {
 	for (int32_t i = 0; i < PA_STEPS; i++)
-		if (s_steps[i] == hz) return i;
+		if (s_steps[i].fps == fps) return i;
 	return 0;
+}
+
+/* The step for an fps: a ladder entry, else the user's own 1x pick (any
+ * refresh-rate entry, or a per-game panel such as 43). */
+static PaStep stepFor(int32_t fps)
+{
+	for (int32_t i = 0; i < PA_STEPS; i++)
+		if (s_steps[i].fps == fps) return s_steps[i];
+	PaStep s = { fps, FPSVITA_INTERVAL_60FPS, fps };
+	return s;
 }
 
 /* The wait before probing the step above `rate`: that step's own backoff.
@@ -47,7 +72,7 @@ static uint64_t probeWait(int32_t rate)
 {
 	int32_t up = stepIdx(rate) - 1;
 	uint64_t w = up >= 0 ? s_probeWait[up] : PA_PROBE_MIN_US;
-	if (rate == s_steps[PA_STEPS - 1] && w > PA_FLOOR_MAX_US)
+	if (rate <= 30 && w > PA_FLOOR_MAX_US)   /* the 2x tier: a menu must not pin the game there */
 		w = PA_FLOOR_MAX_US;
 	return w;
 }
@@ -70,24 +95,22 @@ static void reset(uint64_t now)
 	s_ceiling = 0;
 	s_goodRate = 0;
 	s_badWins = 0;
-	s_atThirty = false;
+	s_ours2 = false;
 }
 
-static void apply(int32_t hz, uint64_t now, uint32_t fps_x10, uint32_t missPct)
+static void apply(int32_t fps, uint64_t now, uint32_t fps_x10, uint32_t missPct)
 {
-	if (hz == 30) {
-		fpsvitaSetPanel(0);
+	PaStep st = stepFor(fps);
+	if (st.interval == FPSVITA_INTERVAL_30FPS) {
 		fpsvitaSetInterval(FPSVITA_INTERVAL_30FPS);
-		s_atThirty = true;
-	} else {
-		if (s_atThirty) {
-			fpsvitaSetInterval(s_base);
-			s_atThirty = false;
-		}
-		fpsvitaSetPanel(hz == 60 ? 0 : hz);
+		s_ours2 = true;
+	} else if (s_ours2) {
+		fpsvitaSetInterval(s_base);
+		s_ours2 = false;
 	}
+	fpsvitaSetPanel(st.hz == 60 ? 0 : st.hz);
 	s_lastOwn = now;
-	s_rate = hz;
+	s_rate = fps;
 }
 
 bool PanelAuto::Active() { return s_active; }
@@ -104,10 +127,10 @@ bool PanelAuto::OwnChange(uint64_t now) { return s_lastOwn && now - s_lastOwn < 
 void PanelAuto::Tick(const FpsvitaState &st, uint64_t now, bool game)
 {
 	if (!g_panelAuto || !game || !fpsvitaPanelUi()) {
-		if (s_active && game && s_atThirty) {
-			/* Auto unticked while holding our 30: give the user's limit back. */
+		if (s_active && game && s_ours2) {
+			/* Auto unticked while holding a 2x step: give the user's limit back. */
 			fpsvitaSetInterval(s_base);
-			s_atThirty = false;
+			s_ours2 = false;
 			s_lastOwn = now;
 		}
 		s_active = false;
@@ -124,7 +147,7 @@ void PanelAuto::Tick(const FpsvitaState &st, uint64_t now, bool game)
 	 * limit the user set, Uncapped and the Limiter are their choice. */
 	bool sixty = st.interval == FPSVITA_INTERVAL_60FPS
 	          || (st.interval == FPSVITA_INTERVAL_OFF && st.native_interval == FPSVITA_INTERVAL_60FPS);
-	bool ours30 = st.interval == FPSVITA_INTERVAL_30FPS && s_atThirty;
+	bool ours30 = st.interval == FPSVITA_INTERVAL_30FPS && s_ours2;
 	bool engaged = (sixty || ours30) && st.softcap == 0
 	            && !(fpsvitaCompatFlags((const char *)st.titleid) & FPSVITA_COMPAT_SPEED);
 	if (!engaged) {
@@ -134,14 +157,15 @@ void PanelAuto::Tick(const FpsvitaState &st, uint64_t now, bool game)
 	}
 	s_active = true;
 
-	int32_t rate = ours30 ? 30 : st.panel_hz > 0 ? st.panel_hz : 60;
+	int32_t hzNow = st.panel_hz > 0 ? st.panel_hz : 60;
+	int32_t rate = ours30 ? hzNow / 2 : hzNow;   /* a 2x step gives half its panel rate */
 	if (rate != s_rate) {
 		/* Not ours landing: the user's pick in the FPS row is the ceiling
 		 * (60fps, Default or a refresh-rate entry), and a new baseline. */
 		if (!OwnChange(now) || s_rate == 0) {
 			s_ceiling = rate;
 			s_base = st.interval;
-			s_atThirty = false;
+			s_ours2 = false;
 			for (int32_t i = 0; i < PA_STEPS; i++)
 				s_probeWait[i] = PA_PROBE_MIN_US;
 			s_lastUp = 0;
@@ -187,7 +211,7 @@ void PanelAuto::Tick(const FpsvitaState &st, uint64_t now, bool game)
 		bool probeFail = s_lastUp && now - s_lastUp < PA_PROBE_FAIL_US;
 		if (!probeFail && s_badWins < 2)
 			return;
-		if (rate > s_steps[PA_STEPS - 1]) {
+		if (rate > PA_FLOOR) {
 			/* Straight to the highest step the measured fps clears, else the
 			 * bottom. A failed probe goes back where it came from instead:
 			 * the fps at a rate the game misses is dragged down by the
@@ -197,10 +221,10 @@ void PanelAuto::Tick(const FpsvitaState &st, uint64_t now, bool game)
 			 * do at a rate it holds: 50 with a fifth doubled read 39.9 where
 			 * 45 was right. Credit the doubled share back before choosing. */
 			uint32_t able = mean + mean * missPct / 100u;
-			int32_t target = s_steps[PA_STEPS - 1];
+			int32_t target = PA_FLOOR;
 			for (int32_t i = 0; i < PA_STEPS; i++)
-				if (s_steps[i] < rate && (uint32_t)s_steps[i] * 10u <= able) {
-					target = s_steps[i];
+				if (s_steps[i].fps < rate && (uint32_t)s_steps[i].fps * 10u <= able) {
+					target = s_steps[i].fps;
 					break;
 				}
 			if (probeFail) {
@@ -225,7 +249,7 @@ void PanelAuto::Tick(const FpsvitaState &st, uint64_t now, bool game)
 	if (rate < s_ceiling && s_clean >= probeWait(rate)) {
 		int32_t up = s_ceiling;
 		for (int32_t i = PA_STEPS - 1; i >= 0; i--)
-			if (s_steps[i] > rate) { up = s_steps[i] < s_ceiling ? s_steps[i] : s_ceiling; break; }
+			if (s_steps[i].fps > rate) { up = s_steps[i].fps < s_ceiling ? s_steps[i].fps : s_ceiling; break; }
 		s_lastUp = now;
 		s_goodRate = rate;
 		s_clean = 0;

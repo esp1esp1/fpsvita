@@ -16,7 +16,8 @@ shots are [below](#before-and-after).*
 
 - **Antilag**: hands the game a newer controller sample so a button press reaches the screen
   sooner, without changing the game's frame rate. Button presses come straight from the
-  controller chip, about 10 ms ahead of the system's once-per-refresh sample. On by default;
+  controller chip, up to a refresh ahead of the system's once-per-refresh sample for the
+  presses that land between that sample and the game's read. On by default;
   at a 30 or 20 limit it also moves the game's input read later.
 - **Overlay**: frame rate, CPU time, input age (INPUT) and queue time over the game, plus a
   TIP row with advice (`tips=0` turns it off) and a LAST row with before/after numbers for
@@ -66,12 +67,16 @@ game's pacing alone and is always safe. Check the
 ### Requirements
 
 - A Vita on HENkaku or enso, so taiHEN loads plugins.
+- ioplus (`ur0:tai/ioplus.skprx` under `*KERNEL`, part of most HENkaku setups). Games are
+  sandboxed away from `ur0:data`, and the helper reads its per-game settings there and writes
+  its log; without ioplus a game runs with the global settings only: no per-game line, no
+  panel rate, no `helper.log` line.
 - A way to copy files: VitaShell's FTP server or USB.
 - Optional: kubridge v0.3 or later, so a shell crash is logged.
 
-fpsvita is tested on one retail OLED Vita (PCH-1000) with enso on firmware 3.65. Firmware
-3.60 is expected to work but is untested. Reports from other models and firmware are
-especially welcome.
+fpsvita is tested on a retail OLED Vita (PCH-1000) with enso and a Slim (PCH-2000), both on
+firmware 3.65. Firmware 3.60 is expected to work but is untested. Reports from other models
+and firmware are especially welcome.
 
 ### Steps
 
@@ -161,6 +166,12 @@ If the Vita's shell fails to start after installing:
 1. Hold L while powering on. enso then skips plugins.
 2. Open the taiHEN config in VitaShell and put `#` in front of the `fpsvita-ui` line.
 3. Reboot, and report the problem with `ur0:data/fpsvita/boot.log` attached.
+
+If it fails to start even with L held, the plugins are not the cause. With the Vita fully
+off, hold Power, PS and R together until Sony's Safe Mode appears and pick Rebuild
+Database (Power, PS, R and Square goes there directly). It rebuilds the app database on
+the internal memory and leaves everything else alone; a crash while a game was starting or
+quitting can leave that database half-written.
 
 ## Reporting a game and getting help
 

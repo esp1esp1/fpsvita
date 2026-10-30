@@ -158,7 +158,34 @@ microsecond) at 1 kHz while a title is owned and idles at 5 Hz otherwise, record
 word last changed. SceCtrl samples that word once per vblank; the 2026-10-27 probe (exp
 16384) measured a press in the word 0/10/17 ms (min/mean/max) before SceCtrl's sample showed
 it. The helper's Antilag adds those presses to the game's samples and stamps them with the
-change time, so INPUT stays a measurement. The only polling in the project.
+change time, so INPUT stays a measurement. The only polling in the project. The word starts
+as all released and `FpsvitaButtons.status` reads `FPSVITA_BTN_NOSYSCON` until a read has
+succeeded (the helper inverts the word: a 0 would be every button down).
+
+The helper's merge (`companion/btnmerge.h`, `tests/btnmerge.cpp`) runs on the game's side
+of SceCtrl, after every kernel plugin that reshapes the sample, so it trusts a physical bit
+only once a syscon down edge of it was followed within four vblanks by the same bit in
+SceCtrl's sample (`pass`). A pass bit is added while the syscon holds it and hidden after
+the syscon releases it until SceCtrl agrees (`rel`). SceCtrl dropping a bit the syscon still
+holds (turbo, a consumed combo) or keeping one past the window after the release (sticky,
+an injected press) revokes it. A constant word never shows an edge, so a PS TV whose syscon
+answers qualifies nothing. Verified 2026-10-28 under reVita 1.0.8 on DOOM64EX1: a consumed
+Cross-to-Circle rule never qualified, turbo Square qualified once and was revoked at its first
+off phase with no leaked read, sticky Triangle qualified, had its release hidden for 3 reads,
+then was given back and revoked.
+
+Early analog sticks (`companion/stkmerge.h`, `tests/stkmerge.cpp`) work the same way. The
+kernel polls the sticks from the syscon every ~2 ms (`stkPoll`: synchronous
+`ksceSysconCmdExec` with a stack packet, command 0x101; the static and async forms both left
+a packet in syscon's command queue and bricked the next reboot, the stack form does not).
+The helper learns SceCtrl's per-axis transform
+`out = 128 + (raw-128)*k` as an EMA over steady, deflected, off-rail pairs (the motion gate
+keeps a fast-moving sample, whose raw-to-sample pairing is loose, from flapping trust), trusts
+an axis after 32 matches within 5 counts and drops it after 3 misses, and overwrites the axis
+with the fresher poll only while trusted, the raw is younger than a vblank, off the rails, and
+differs from the stale sample by more than the residual. A reshaping plugin or digital
+sampling never matches, so it never trusts. The dev rate line carries
+`stk=n/err t<trust> d<delivered> l<learned>/<revoked> k<q16 ×4>`.
 
 ### Panel auto
 
@@ -171,9 +198,10 @@ level load fills one window), drops straight to the highest rate the measured fp
 when a probe of that step fails within 8 s, capped at 2 min, halved after a minute clean;
 capped at 40 s from the floor) it steps one rate up, never above the user's FPS-row pick (the
 ceiling); the window's fps is frames over wall time, not the helper's EMA; a failed probe returns to the rate
-it left (the fps at a missed rate undercounts). The ladder is 60, 50, 45, 40 (panel rates) and
-30 (the 30fps limit at the stock refresh, `s_atThirty`; unticking Auto restores the user's
-interval). Changes go through `fpsvitaSetPanel` from the shell pid; `PanelAuto::OwnChange` keeps
+it left (the fps at a missed rate undercounts). The ladder (`s_steps`, fps / interval /
+panel) is 60, 55, 50, 48, 45, 40 at one frame per refresh and 30, 28, 26, 24, 22, 20 as the
+30fps interval at a panel of twice the rate (`s_ours2`; unticking Auto restores the user's
+interval); the 2x tier is the integer-multiple rule from Horizon-OC's refresh driver. Changes go through `fpsvitaSetPanel` from the shell pid; `PanelAuto::OwnChange` keeps
 them out of the overlay's LAST row. Dev builds log `PanelAuto: 60>45 fps=.. miss=..` to
 boot.log.
 
@@ -268,10 +296,16 @@ thread that reads input and submits keeps the queue short. Auto-detect engages a
 
 `fpsvitaSetPanel` patches the vertical timing (vtotal and front porch) of the panel's output
 mode 0 entry in SceLowio's display timing table with `taiInjectDataForKernel`. The display
-controller re-reads it every frame, so the change is live with no mode switch. The kernel
-applies it only in output mode 0 and only when exactly one table entry matches every known
-word, so a firmware with another layout is left alone (the Slim's LCD uses the same entry; two
-user reports had it accept 40 Hz, the actual refresh is unconfirmed). Callers are the owning
+controller re-reads it every frame, so the change is live with no mode switch. The two
+internal panels use different entries of the same table: the OLED's is 1050 x 594 at a
+37.38 MHz pixel clock, the Slim's LCD's is 1120 x 585 at 39.27 MHz with its own porches
+(`k_panels` in `kernel/main.c`); `ksceDsiGetPixelClock(0)` returns the pixel clock word of
+the entry in use, which is how the kernel picks one, and the stretch keeps that entry's
+horizontal timing and porches. It applies only in output mode 0 and only when exactly one
+table entry matches every known word of that panel's entry, so a firmware with another
+layout is left alone. Both panels measured within 0.03 Hz of every request from 55 down to
+20 with `tests/paneltest` (2026-10-29); the LCD's picture is clean down to 30 and breaks up
+below that on both panels. Callers are the owning
 helper at launch and SceShell (`ksceKernelSysrootGetShellPid`) for the FPS row's
 refresh-rate entries while a title is owned. It releases the patch on a new or cleared title id and when the owner exits or
 is killed. A sysevent handler restores the stock timing at the first suspend event and
@@ -447,7 +481,9 @@ eboots are encrypted and print nothing), for a title whose hook mask has a gap. 
 | `rr` | Dev builds: `sceDisplayGetRefreshRate` times 1000 |
 | `hp`, `hpa` | Dev builds: present and AddEntry periods in four buckets of the cap budget (`<1.25`, `1.25-1.75`, `1.75-2.25`, `>2.25`), reset per rate line |
 | `lt` | Dev builds: late-tear flips in the window (exp bit 4096) |
-| `btn` | Dev builds: controller reads whose syscon button mask differed from the SceCtrl sample, and total reads (exp bit 8192) |
+| `vc` | Dev builds: `min/ema/max/n` raster line at the game's flip calls in the window (dev kernels read SceDsi's Vcount for the owner; a tearing flip lands at the next hsync after it) |
+| `stk` | Dev builds: `n/err`, the kernel's stick ring: reads so far and the last syscon error |
+| `btn` | Dev builds: `early_reads/reads/pass/revokes/hides/presses/early`: reads where a syscon press went out ahead of the sample, total reads, the pass mask (bits trusted for early delivery, hex), bits revoked, reads where a released press was hidden, physical presses, presses delivered early (the overlay's `BTN` share) |
 | `imm=calls/errors/code` | Tearing's kernel flips, failures and the first error code |
 | `present_lag` | Unused, always 0 |
 

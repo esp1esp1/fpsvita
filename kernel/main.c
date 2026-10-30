@@ -15,6 +15,7 @@
 #include <psp2kern/kernel/suspend.h>
 #include <psp2kern/kernel/sysroot.h>
 #include <psp2kern/kernel/syscon.h>
+#include <psp2kern/lowio/dsi.h>
 #include <taihen.h>
 #include <string.h>
 
@@ -40,6 +41,7 @@ static volatile uint32_t g_titleid[3]    = {0, 0, 0};
 static volatile int32_t g_hud_mode       = FPSVITA_HUD_OFF;
 static volatile int32_t g_hud_pos        = 0;
 static volatile int32_t g_adv_flags      = 0;
+static volatile int     g_stk_hold;   /* sysEvent: suspend or shutdown under way, no syscon packets */
 static volatile int32_t g_softcap        = 0;
 static FpsvitaStats     g_stats;          /* zeroed when a new title id lands */
 static SceUID           g_owner_pid = -1; /* process that wrote the title id */
@@ -93,6 +95,7 @@ int fpsvitaGetState(FpsvitaState *out, uint32_t size)
 	s.softcap         = g_softcap;
 	s.stats           = g_stats;
 	s.panel_hz        = g_panel_hz;
+	s.vcount          = 0xffffffffu;
 	if (size > sizeof(s))
 		size = sizeof(s);
 	ret = ksceKernelCopyToUser(out, &s, size);
@@ -236,6 +239,9 @@ int ksceKernelUnregisterSysEventHandler(SceUID id);
 
 static int sysEvent(int resume, int eventid, void *args, void *opt)
 {
+	/* No stick packets from the first suspend or shutdown phase until the
+	 * resume completes: the syscon runs the power sequence. */
+	g_stk_hold = !resume || eventid != 0x100000;
 	if (!resume) {
 		if (g_panel_hz > 0 && !g_panel_resume) {   /* first suspend phase only */
 			g_panel_resume = g_panel_hz;
@@ -251,21 +257,26 @@ static int sysEvent(int resume, int eventid, void *args, void *opt)
 }
 
 /*
- * Panel refresh (experimental, per-game `panel=<hz>`): the OLED's mode 0 DSI
- * timing entry in SceLowio (xerpi's libbaremetal dsi.c layout: flags,
+ * Panel refresh (experimental, per-game `panel=<hz>`): the internal panel's
+ * DSI timing entry in SceLowio (xerpi's libbaremetal dsi.c layout: flags,
  * pixelclock24, subinfo24, pixelclock30, subinfo30, htotal, vtotal,
  * interlaced, HFP, HSW, HBP, VFP, VSW, VBP) is re-read every frame for vtotal
  * and VFP, so a taller vtotal with the extra lines in the front porch lowers
- * the refresh live: 1050 x 890 is 40.0 Hz (measured 2026-10-18 on a PCH-1000,
- * fw 3.65, no artefacts at 24 to 50 Hz). Nothing is written unless the panel
- * is in mode 0 and exactly one entry matches every known word, so another
- * firmware's table is left alone. The Slim's LCD is brought up from the same
- * mode 0 entry (xerpi's display.c), so it matches there too; untested. Released (the
- * original words come back) when the title exits or another one starts.
+ * the refresh live (the wiki's DSI Registers page, 2026-10-28: the hardware
+ * takes V_active = vtotal - VFP - VSW - VBP, 544 on both panels, and this
+ * patch keeps vtotal - VFP constant so the active height stays 544). The OLED
+ * (PCH-1000) runs from 1050 x 594 at 37.38 MHz; the Slim's LCD (PCH-2000)
+ * from a different entry, 1120 x 585 at 39.27 MHz with its own porches
+ * (tests/paneltest, 2026-10-29: both tables hold both entries, and
+ * ksceDsiGetPixelClock reports the pixel clock word of the one in use, so
+ * that is how the entry is chosen). Measured on both: 50/45/40/35/30/24/20
+ * all within 0.03 Hz of the request; the picture breaks up below 30 on both
+ * and the LCD is clean down to 30 (the ladder's floor). Nothing is written
+ * unless the panel is in mode 0 and exactly one entry matches every known
+ * word of the panel's own entry, so another firmware's table is left alone.
+ * Released (the original words come back) when the title exits or another
+ * one starts.
  */
-#define PANEL_PCLK_HZ   37384615u   /* 1050 x 594 x 59.94 */
-#define PANEL_HTOTAL    1050u
-#define PANEL_VACTIVE   590u        /* vtotal minus the VFP it is drawn with */
 #define PANEL_WORDS     14
 
 /* SceDisplayForDriver 0xD2CED235, in the SDK stub but not its headers */
@@ -275,12 +286,23 @@ typedef int (*GetModuleInfoFn)(SceUID pid, SceUID modid, SceKernelModuleInfo *in
 int module_get_export_func(SceUID pid, const char *modname, uint32_t libnid, uint32_t funcnid,
                            uintptr_t *func);
 
+/* The two internal panels' stock entries (the subinfo words vary and are
+ * not matched). The pixel clock word is in units of 1/16.667 Hz. */
+typedef struct {
+	uint32_t flags, pclk, ht, vt, hfp, hsw, hbp, vfp, vsw, vbp;
+} PanelEntry;
+static const PanelEntry k_panels[] = {
+	{5, 2243100, 1050, 594, 20, 66, 4, 4, 4, 42},     /* OLED, PCH-1000 */
+	{4, 2356363, 1120, 585, 136, 4, 20, 4, 4, 33},    /* LCD, PCH-2000 */
+};
+
 static SceUID   g_panel_lock = -1;
 static SceUID   g_panel_inject = -1;
 static SceUID   g_panel_modid = -1;
 static int      g_panel_seg = -1;
 static uint32_t g_panel_off;
 static int      g_panel_scanned;    /* 1 found, -1 not this hardware/firmware */
+static const PanelEntry *g_panel_entry;
 
 /* ksceKernelGetModuleInfo's NID changed in 3.63; resolve whichever exists. */
 static GetModuleInfoFn getModuleInfoFn(void)
@@ -297,11 +319,18 @@ static GetModuleInfoFn getModuleInfoFn(void)
 
 static int panelFind(void)
 {
-	static const uint32_t want[PANEL_WORDS] = {5, 2243100, 0, 0, 0, PANEL_HTOTAL, 594,
-	                                           0, 20, 66, 4, 4, 4, 42};
 	if (g_panel_scanned)
 		return g_panel_scanned;
 	g_panel_scanned = -1;
+	int pclk = ksceDsiGetPixelClock(0);
+	const PanelEntry *pe = NULL;
+	for (unsigned i = 0; i < sizeof(k_panels) / sizeof(k_panels[0]); i++)
+		if ((int)k_panels[i].pclk == pclk)
+			pe = &k_panels[i];
+	if (!pe)
+		return -1;
+	const uint32_t want[PANEL_WORDS] = {pe->flags, pe->pclk, 0, 0, 0, pe->ht, pe->vt, 0,
+	                                    pe->hfp, pe->hsw, pe->hbp, pe->vfp, pe->vsw, pe->vbp};
 	GetModuleInfoFn getInfo = getModuleInfoFn();
 	tai_module_info_t ti;
 	ti.size = sizeof(ti);
@@ -333,6 +362,7 @@ static int panelFind(void)
 	if (hits != 1)
 		return -1;
 	g_panel_modid = ti.modid;
+	g_panel_entry = pe;
 	g_panel_scanned = 1;
 	return 1;
 }
@@ -352,9 +382,13 @@ static void panelSet(int32_t hz)
 	unsigned int mode = 1, pf = 0;
 	if (hz >= FPSVITA_PANEL_HZ_MIN && hz <= FPSVITA_PANEL_HZ_MAX
 	    && ksceDisplayGetOutputMode(0, &mode, &pf) >= 0 && mode == 0 && panelFind() > 0) {
-		uint32_t vt = (PANEL_PCLK_HZ + PANEL_HTOTAL * (uint32_t)hz / 2) / (PANEL_HTOTAL * (uint32_t)hz);
-		/* words 5..13: htotal, vtotal, interlaced, HFP, HSW, HBP, VFP, VSW, VBP */
-		uint32_t v[9] = {PANEL_HTOTAL, vt, 0, 20, 66, 4, vt - PANEL_VACTIVE, 4, 42};
+		const PanelEntry *pe = g_panel_entry;
+		uint64_t pclk_hz = (uint64_t)pe->pclk * 50u / 3u;
+		uint32_t den = pe->ht * (uint32_t)hz;
+		uint32_t vt = (uint32_t)((pclk_hz + den / 2) / den);
+		/* words 5..13: htotal, vtotal, interlaced, HFP, HSW, HBP, VFP, VSW, VBP;
+		 * vtotal - VFP stays what the stock entry has, so V_active does too */
+		uint32_t v[9] = {pe->ht, vt, 0, pe->hfp, pe->hsw, pe->hbp, vt - (pe->vt - pe->vfp), pe->vsw, pe->vbp};
 		g_panel_inject = taiInjectDataForKernel(KERNEL_PID, g_panel_modid, g_panel_seg,
 		                                        g_panel_off + 5 * 4, v, sizeof(v));
 		if (g_panel_inject >= 0)
@@ -380,14 +414,63 @@ void fpsvitaSetPanel(int32_t hz)
  * average, 17 ms at most). A 1 kHz kernel thread keeps the word and the time
  * it last changed, so the helper can hand the game a press early and stamp
  * it honestly. The read is the driver's cached word, a microsecond; the
- * thread idles at 5 Hz while no title is owned. */
-static volatile uint32_t g_btn_word;
+ * thread idles at 5 Hz while no title is owned. The word starts as all
+ * released (1s) and the status says NOSYSCON until a read has succeeded: the
+ * helper inverts the word, so a 0 would read as every button down. Remapper
+ * plugins (reVita) reshape SceCtrl's samples below the helper; the helper's
+ * per-button table (companion/btnmerge.h) copes, verified 2026-10-28. */
+static volatile uint32_t g_btn_word = ~0u;
 static volatile uint64_t g_btn_changed;
+static volatile int      g_btn_ok;      /* a syscon read has succeeded */
 static volatile int      g_btn_run = 1;
 static SceUID            g_btn_thread = -1;
 
+/* Sticks: SceCtrl reads them with syscon command 0x0104 once per vblank
+ * (probe, 2026-10-28). The same command from here every 4 ms, while a title
+ * with Antilag is owned, gives the helper a stick value up to a vblank
+ * fresher; the helper only uses it while it matches what SceCtrl reports a
+ * vblank later (companion/main.c). Reply bytes 4-7 are lx ly rx ry. */
+static FpsvitaSticks g_stk;
+static uint32_t g_stk_errs;
+
+/* Synchronous exchange with a STACK packet, exactly as Sony's own
+ * ksceSysconReadCommand does (it builds the packet on its stack, calls
+ * ksceSysconCmdExec, reads the reply, returns). From the SceSyscon
+ * decompile (2026-10-29): CmdExec is
+ * synchronous, it links the packet into syscon's global command queue and
+ * UNLINKS it before returning, so a transient stack packet leaves nothing
+ * behind. The earlier crashes used a STATIC packet (sync 28th, async 29th):
+ * that one stayed linked in the queue and the reboot/power-off sequence, which
+ * is also syscon-driven, tripped over it and left SceShell's database
+ * half-written. CmdExec also refuses while the suspend flag is set and
+ * requires thread context, both of which hold here. Command 0x101 is the
+ * 10-byte form (controls word, then lx ly rx ry at reply data bytes 4-7),
+ * the same the safe button read uses for 0x100. tx = cmd lo, cmd hi, length;
+ * the driver appends the checksum. */
+static int stkPoll(void)
+{
+	if (g_stk_errs >= 8 || g_stk_hold) return -1;   /* the bus said no, or the system is going down */
+	SceSysconPacket pkt;
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.tx[0] = 0x01; pkt.tx[1] = 0x01; pkt.tx[2] = 0x01;
+	int r = ksceSysconCmdExec(&pkt, 0);
+	if (r < 0) { g_stk.err = r; g_stk_errs++; return r; }
+	if (pkt.rx[SCE_SYSCON_PACKET_RX_LENGTH] < 10) {
+		g_stk.err = 0x7fff0000 | pkt.rx[SCE_SYSCON_PACKET_RX_LENGTH];
+		g_stk_errs++;
+		return -1;
+	}
+	uint32_t i = g_stk.n % FPSVITA_STK_RING;
+	const unsigned char *d = &pkt.rx[SCE_SYSCON_PACKET_RX_DATA(0)];
+	g_stk.at[i] = ksceKernelGetSystemTimeWide();
+	g_stk.v[i][0] = d[4]; g_stk.v[i][1] = d[5]; g_stk.v[i][2] = d[6]; g_stk.v[i][3] = d[7];
+	g_stk.n++;
+	return 0;
+}
+
 static int btnThread(SceSize args, void *argp)
 {
+	unsigned tick = 0;
 	(void)args; (void)argp;
 	while (g_btn_run) {
 		if (g_owner_pid < 0) {
@@ -395,10 +478,20 @@ static int btnThread(SceSize args, void *argp)
 			continue;
 		}
 		SceUInt32 w = 0;
-		if (ksceSysconGetControlsInfo(&w) >= 0 && w != g_btn_word) {
-			g_btn_word = w;
-			g_btn_changed = ksceKernelGetSystemTimeWide();
+		if (ksceSysconGetControlsInfo(&w) >= 0) {
+			if (w != g_btn_word) {
+				g_btn_word = w;
+				g_btn_changed = ksceKernelGetSystemTimeWide();
+			}
+			g_btn_ok = 1;
 		}
+		/* Early sticks: every other tick (~2 ms apart) while Antilag is on and
+		 * a title is owned. Synchronous CmdExec with a stack packet, so no
+		 * packet of ours lingers in syscon's queue across a reboot (the static
+		 * and async forms both bricked, 2026-10-28/29; this stack form survived
+		 * repeated reboot cycles, 2026-10-29). */
+		if ((++tick & 1) == 0 && (g_adv_flags & FPSVITA_ADV_JIT))
+			stkPoll();
 		ksceKernelDelayThread(1000);
 	}
 	return 0;
@@ -412,10 +505,23 @@ int fpsvitaGetButtons(FpsvitaButtons *out)
 	/* Owner only, like the stats push: no raw syscon read for any process. */
 	if (callerIsOwner() && g_btn_thread >= 0) {
 		b.raw = g_btn_word;
-		b.pad = 0;
+		b.status = g_btn_ok ? 0 : FPSVITA_BTN_NOSYSCON;
 		b.changed_at = g_btn_changed;
 		b.now = ksceKernelGetSystemTimeWide();
 		ret = ksceKernelCopyToUser(out, &b, sizeof(b));
+	}
+	SYSCALL_EXIT
+	return ret;
+}
+
+int fpsvitaGetSticks(FpsvitaSticks *out)
+{
+	int ret = -1;
+	SYSCALL_ENTER
+	if (callerIsOwner() && g_btn_thread >= 0) {
+		FpsvitaSticks s = g_stk;
+		s.now = ksceKernelGetSystemTimeWide();
+		ret = ksceKernelCopyToUser(out, &s, sizeof(s));
 	}
 	SYSCALL_EXIT
 	return ret;
@@ -425,6 +531,7 @@ static int procExit(SceUID pid, SceProcEventInvokeParam1 *a2, int a3)
 { ownerGone(pid); return 0; }
 static int procKill(SceUID pid, SceProcEventInvokeParam1 *a2, int a3)
 { ownerGone(pid); return 0; }
+
 
 int __module_start(SceSize args, const void *argp)
 {

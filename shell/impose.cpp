@@ -204,10 +204,10 @@ static void writeConfigFile(int32_t interval, int32_t inject, int32_t autodetect
 	int len = sce_paf_snprintf(buf, sizeof(buf),
 	                            "limit=%d\nvsync=%s\nhud=%d\nhudpos=%d\n"
 	                            "lowlat=%d\nantilag=%d\nlimiter=%d\ntearing=%d\nlog=%d\n"
-	                            "panelmodes=%d\npanelauto=%d\ntips=%d\nsyscon=%d\n",
+	                            "panelmodes=%d\npanelauto=%d\ntips=%d\nsyscon=%d\nsticks=%d\n",
 	                            interval, vsync, g_hudMode, g_hudPos,
 	                            g_lowLatency, g_jit ? 1 : 0, g_softcap, g_tear, g_rateLog,
-	                            g_panelModes, g_panelAuto, g_tips, g_syscon);
+	                            g_panelModes, g_panelAuto, g_tips, g_syscon, g_sticks);
 	if (len > 0 && len < (int)sizeof(buf))
 		writeWhole(FPSVITA_CONFIG_FILE, buf, len);
 }
@@ -448,6 +448,8 @@ bool readGlobals(int32_t *interval, int32_t *inject, int32_t *autodetect,
 				g_tips = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 			else if (klen == 6 && sce_paf_strncmp(p, "syscon", 6) == 0)
 				g_syscon = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
+			else if (klen == 6 && sce_paf_strncmp(p, "sticks", 6) == 0)
+				g_sticks = sce_paf_strtol(val, NULL, 10) ? 1 : 0;
 		}
 		if (*eol != '\n') break;
 		p = eol + 1;
@@ -667,10 +669,34 @@ void Impose::PanelCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *use
 {
 	Impose *obj = (Impose *)userdata;
 	g_panelModes = !g_panelModes;
+	if (!g_panelModes && g_panelAuto) {
+		/* Auto needs the modes: it goes with them, and the governor lets go. */
+		g_panelAuto = 0;
+		if (obj->panelAutoBox)
+			obj->panelAutoBox->SetCheck(false);
+		Hud::Apply();
+	}
 	obj->PersistState();
 	obj->BuildModes();
 	obj->UpdateModeLabel();
 	obj->UpdateWarning();
+	obj->UpdatePanelState();
+}
+
+/* The Auto box only shows with Modes ticked: the governor has nothing to
+ * pick from without the refresh-rate entries. Same pattern as the Vsync box
+ * under auto-detect (UpdateInjectState). */
+void Impose::UpdatePanelState()
+{
+	if (!panelAutoBox || !panelAutoLabel)
+		return;
+	if (g_panelModes) {
+		widgetShow(panelAutoBox);
+		widgetShow(panelAutoLabel);
+	} else {
+		widgetHide(panelAutoBox);
+		widgetHide(panelAutoLabel);
+	}
 }
 
 void Impose::PanelAutoCBFun(int32_t type, ui::Handler *self, ui::Event *e, void *userdata)
@@ -838,9 +864,20 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 				this->currentPanel = up;
 			}
 		}
-		/* The overlay's NOT HOOKED, next to the box where it gets ticked. */
-		this->llNotHooked = (st.adv_flags & FPSVITA_ADV_LOWLAT) && st.stats.fps_x10
-		                 && !(st.stats.flags & FPSVITA_STATF_GXM_INIT);
+		/* (!) next to the box where Lowlat gets ticked, the overlay's own LOW
+		 * LAT states. NOT HOOKED: ticked, the game presents, its GXM init never
+		 * passed the hook (relaunch will not help). Needs restart: ticked after
+		 * init was already seen (RESTART GAME), or unticked but still applied
+		 * (ON UNTIL RESTART); either way the tick is not live until relaunch.
+		 * A title running its own 1-deep queue (LOWLAT_NATIVE) is never flagged. */
+		{
+			int reqLL   = (st.adv_flags & FPSVITA_ADV_LOWLAT) != 0;
+			int onLL    = (st.stats.flags & FPSVITA_STATF_LOWLATENCY) != 0;
+			int natLL   = (st.stats.flags & FPSVITA_STATF_LOWLAT_NATIVE) != 0;
+			int init    = (st.stats.flags & FPSVITA_STATF_GXM_INIT) != 0;
+			this->llNotHooked = reqLL && st.stats.fps_x10 && !init;
+			this->llNeedsRestart = !natLL && ((reqLL && init && !onLL) || (!reqLL && onLL));
+		}
 	} else {
 		this->advFlags = (g_lowLatency ? FPSVITA_ADV_LOWLAT : 0) | fpsvitaJitFlags(g_jit)
 		               | (g_tear ? FPSVITA_ADV_TEAR : 0);
@@ -908,7 +945,8 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 	this->jitBox = (ui::CheckBox *)this->root->FindChild(IDParam("fc_check_jit"), 0);
 	/* Fourth row: panel modes. Optional widgets (an older RCO lacks them). */
 	ui::CheckBox *panelBox = (ui::CheckBox *)this->root->FindChild(IDParam("fc_check_panel"), 0);
-	ui::CheckBox *panelAutoBox = (ui::CheckBox *)this->root->FindChild(IDParam("fc_check_panel_auto"), 0);
+	this->panelAutoBox = (ui::CheckBox *)this->root->FindChild(IDParam("fc_check_panel_auto"), 0);
+	this->panelAutoLabel = (ui::Text *)this->root->FindChild(IDParam("fc_text_panel_auto_label"), 0);
 	ui::Widget *panelGroup = this->root->FindChild(IDParam("fc_group_impose_panel"), 0);
 	this->softcapText = (ui::Text *)this->root->FindChild(IDParam("fc_text_softcap_value"), 0);
 	ui::Widget *scDown = this->root->FindChild(IDParam("fc_button_softcap_down"), 0);
@@ -944,7 +982,7 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 		ui::Text *llWarn = (ui::Text *)this->root->FindChild(IDParam("fc_text_lowlat_warn"), 0);
 		if (llWarn) {
 			textSet(llWarn, L"(!)");
-			if (hasGame && llNotHooked)
+			if (hasGame && (llNotHooked || llNeedsRestart))
 				widgetShow(llWarn);
 			else
 				widgetHide(llWarn);
@@ -961,6 +999,7 @@ Impose::Impose(Plugin *plugin, ui::Box *root)
 		panelAutoBox->SetCheck(g_panelAuto != 0);
 		panelAutoBox->AddEventCallback(ui::Button::CB_BTN_DECIDE, PanelAutoCBFun, this);
 	}
+	UpdatePanelState();
 	UpdateSoftcapLabel();
 
 	/* Show save button only when a game is running */

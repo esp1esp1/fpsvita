@@ -36,6 +36,7 @@ extern int32_t g_rateLog;
 /* `syscon=0`: Antilag without the syscon presses (default 1). No menu row;
  * the shell only carries it through its config.txt rewrites. */
 extern int32_t g_syscon;
+extern int32_t g_sticks;
 
 /* `panelmodes=1` (the Panel row's Modes box; the older `experimental=1`
  * reads the same): the FPS row's refresh-rate entries and the overlay's

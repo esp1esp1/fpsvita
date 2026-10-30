@@ -58,6 +58,7 @@ private:
 	void UpdateModeLabel();
 	void UpdateWarning();
 	void UpdateInjectState();
+	void UpdatePanelState();
 	void UpdateHudLabels();
 	void UpdateSoftcapLabel();
 	void PersistState();
@@ -89,6 +90,8 @@ private:
 	paf::ui::Text *hudPosText;
 	paf::ui::CheckBox *llBox;
 	paf::ui::CheckBox *jitBox;
+	paf::ui::CheckBox *panelAutoBox;   /* optional (an older RCO lacks the Panel row) */
+	paf::ui::Text *panelAutoLabel;
 	paf::ui::Text *softcapText;
 
 	int32_t currentInterval;
@@ -101,7 +104,8 @@ private:
 	char titleid[FPSVITA_TITLEID_LEN];
 	bool hasGame;
 	bool readPeek;     /* the title's state.txt line has read=peek */
-	bool llNotHooked;  /* Lowlat ticked, the game presents, its GXM init never passed the hook */
+	bool llNotHooked;    /* Lowlat ticked, the game presents, its GXM init never passed the hook */
+	bool llNeedsRestart; /* Lowlat tick not live until relaunch (RESTART GAME / ON UNTIL RESTART) */
 	bool valid;
 	bool registered;   /* Update was added to MainThreadCallList */
 };

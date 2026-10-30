@@ -1,23 +1,66 @@
 # Changelog
 
+## v0.4.1 (2026-10-30)
+
+### Added
+
+- **Early sticks.** Antilag already hands the game button presses from the controller chip
+  ahead of the system's once-per-refresh sample; it now does the same for the analog sticks.
+  The kernel polls the sticks from the syscon every few milliseconds and the helper, once it
+  has learned the chip-to-game transform for each axis and seen it match, overwrites the stick
+  reading with the fresher value during motion. A per-axis gate keeps it off under a stick
+  plugin (AnalogsEnhancer) or digital sampling, so those are untouched. The overlay's
+  ANTI-LAG row shows `STK` next to the button share while it is in effect. Its own
+  `sticks=` key in `config.txt` (default 1) turns it off separately from the presses
+  (`syscon=`); not in the lite build or on a PS TV.
+
+### Fixed
+
+- **Panel modes on the Slim.** The PCH-2000's LCD runs from its own timing entry in the
+  display table (1120 x 585 at 39.27 MHz), not the OLED's; v0.4.0 patched the OLED's entry
+  on a Slim, which changed nothing while reporting the rate as granted. The kernel now picks
+  the entry by the live pixel clock and keeps its porches. Measured on a PCH-2000 with the
+  panel tester (`tests/paneltest`): every rate from 55 to 20 within 0.03 Hz of the request;
+  the picture is clean down to 30 and breaks up below that on both panels.
+
+### Changed
+
+- The quick menu's Lowlat row shows `(!)` when the tick will not take effect until the game
+  is relaunched (it reports `RESTART GAME` or `ON UNTIL RESTART` on the overlay), as well as
+  the existing case where the title cannot be hooked at all.
+- Smaller plugins: the helper no longer keeps a 16 KB static buffer for the VitaGrafix config
+  (it streams it), cutting its uninitialised memory by about two thirds, and the shell's
+  ~170-entry compatibility table is shared across its sources instead of duplicated.
+- ioplus is a documented requirement: game processes cannot read `ur0:data/fpsvita` without
+  it, so the per-game line, the panel rate and the helper log never reached a game on a setup
+  that lacks it (found on a Slim, 2026-10-29).
+
 ## v0.4.0 (2026-10-28)
 
 ### Added
 
 - **Antilag delivers button presses from the controller chip.** The system samples the
   controller once per refresh; the chip's own word is read at 1 kHz by the kernel module and
-  a press is handed to the game about 10 ms earlier at 60 Hz (up to a refresh, and up to 25 ms
-  at a 40 Hz panel). Presses only; releases, sticks and touch keep the normal sampling. INPUT
-  counts such presses from the chip's change time, and the ANTI-LAG row shows the average
-  gain as `BTN -9.6`. `syscon=0` in `config.txt` turns the part off. Not in the lite build.
+  a press that lands between the system's sample and the game's read is handed to the game a
+  refresh earlier (17 ms at 60 Hz, 25 ms at a 40 Hz panel), and its release as early. How many
+  presses that is depends on where the game's read lands: Doom64EX measured 10% at 60 fps
+  and 18% at a 30 limit with the sleep backed off (the share with the sleep in force is not
+  measured yet). Sticks and touch keep the normal sampling. A
+  button qualifies once one press of it has reached the game as itself, so a remapper's
+  consumed, turbo or sticky buttons (checked with reVita) and presses injected by another
+  plugin stay theirs. INPUT counts such presses from the chip's change time, and the ANTI-LAG row shows the
+  share of presses that gained as `BTN 12%`. `syscon=0` in `config.txt` turns the part off. Not in the lite
+  build or on a PS TV.
 - **Panel row in the quick menu**, under Latency. `Modes` (`panelmodes=1`) adds the 50Hz, 45Hz
   and 40Hz entries to the FPS row; it replaces `experimental=1`, which still reads as on.
-  `Auto` (`panelauto=1`) keeps the game at the highest step it holds: 60, 50, 45 or 40 Hz
-  with one frame per refresh, or a 30fps limit at the normal refresh as the floor, with the
-  FPS row's pick as the ceiling. It checks every 2 seconds, drops after two bad checks (a
+  `Auto` (`panelauto=1`) keeps the game at the highest step it holds: 60, 55, 50, 48, 45 or
+  40 Hz with one frame per refresh, then 30, 28, 26, 24, 22 or 20 fps as the 30fps limit at a
+  panel of twice the rate, every frame shown for exactly two refreshes, with the FPS row's
+  pick as the ceiling. It checks every 2 seconds, drops after two bad checks (a
   level load does not count) to the highest step the game could clear, and tries the next
   step up after a clean streak, backing off per step when a try fails and returning to the
-  step it left. It runs at 60fps or at Default on a 60-native game, not on speed-tied titles,
+  step it left. The Auto box only shows with Modes ticked, and unticking Modes clears it. It
+  runs at 60fps or at Default on a 60-native game, not on speed-tied titles,
   and with the overlay off. LIMIT reads `AUTO 45 @45HZ` (Mini: `AUTO 45`) while it is in
   charge; LAST ignores its switches; the FPS row and Save show and store your own pick.
   Slim units are offered the modes.
@@ -38,6 +81,7 @@
   `tools/ingest_playlog.py` records both plus a `gl` column for vitaGL titles.
 
 ### Changed
+
 
 - **Mini is one small line**: FPS, frame time, 1% low, CPU, INPUT, QUEUE, the limit and the
   active flags, right-aligned in the right corners.

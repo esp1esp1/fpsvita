@@ -125,6 +125,7 @@ int32_t g_softcap = 0;
 int32_t g_tear = 0;
 int32_t g_rateLog = 0;
 int32_t g_syscon = 1;
+int32_t g_sticks = 1;
 int32_t g_panelModes = 0;
 int32_t g_panelAuto = 0;
 int32_t g_tips = 1;

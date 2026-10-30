@@ -15,7 +15,14 @@ enum {
 
 struct FpsvitaCompatEntry { const char *id; unsigned flags; };
 
-static const struct FpsvitaCompatEntry fpsvita_compat[] = {
+/* Declarations for every includer; the table is defined in one
+ * translation unit (compat.cpp) that defines FPSVITA_COMPAT_DEFINE,
+ * so it is not duplicated per source file. */
+extern const struct FpsvitaCompatEntry fpsvita_compat[];
+extern const unsigned fpsvita_compat_count;
+
+#ifdef FPSVITA_COMPAT_DEFINE
+const struct FpsvitaCompatEntry fpsvita_compat[] = {
 	{ "PCSA00011", 1u },
 	{ "PCSA00015", 8u },
 	{ "PCSA00017", 1u },
@@ -186,7 +193,8 @@ static const struct FpsvitaCompatEntry fpsvita_compat[] = {
 	{ "PCSH10035", 1u },
 	{ "PCSH10082", 1u },
 };
-static const unsigned fpsvita_compat_count =
+const unsigned fpsvita_compat_count =
 	(unsigned)(sizeof(fpsvita_compat) / sizeof(fpsvita_compat[0]));
+#endif
 
 #endif

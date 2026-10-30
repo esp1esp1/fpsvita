@@ -502,7 +502,7 @@ void Hud::Refresh(const FpsvitaState &st)
 		bool autoOn = PanelAuto::Active();
 		if (autoOn) {   /* the governor's step: the panel rate, or 30 at its floor */
 			int hz = st.panel_hz > 0 ? (int)st.panel_hz : 60;
-			pos = appendW(buf, pos, L"AUTO %d  ", st.interval == FPSVITA_INTERVAL_30FPS ? 30 : hz);
+			pos = appendW(buf, pos, L"AUTO %d  ", st.interval == FPSVITA_INTERVAL_30FPS ? hz / 2 : hz);
 		} else if (mode)
 			pos = appendW(buf, pos, L"%ls  ", mode);
 		else
@@ -533,7 +533,7 @@ void Hud::Refresh(const FpsvitaState &st)
 
 	if (PanelAuto::Active()) {   /* the governor holds the rate: one form for every step */
 		int hz = st.panel_hz > 0 ? (int)st.panel_hz : 60;
-		int step = st.interval == FPSVITA_INTERVAL_30FPS ? 30 : hz;   /* Default and 60fps both give one frame per refresh */
+		int step = st.interval == FPSVITA_INTERVAL_30FPS ? hz / 2 : hz;   /* a 2x step: two refreshes per frame */
 		setRow(ROW_LIMIT, L"AUTO %d @%dHZ", step, hz);
 	}
 	else if (st.panel_hz > 0 && mode)   /* panel rate: the limit is in its vblanks */
@@ -572,16 +572,28 @@ void Hud::Refresh(const FpsvitaState &st)
 
 	/* Anti-lag: the fresh poll is always at work once enabled; the value is
 	 * the whole-vblank sleep in force and the frames it has cost. */
-	/* BTN: how much newer the syscon's presses were than the vblank sample,
-	 * on the reads where they were (blank until a press has shown it). */
-	wchar_t btn[20];
+	/* BTN: the share of the user's presses so far that reached the game
+	 * before the vblank sample had them (blank until a press has happened).
+	 * Each such press gains up to a refresh; the mean lead is in the rate
+	 * line. The row holds about 19 characters next to its label: "16.6
+	 * ms/0 BTN 100%" is the longest form (a 2026-10-28 screenshot with a
+	 * longer suffix ran into the label). */
+	/* BTN share, and STK when early sticks are trusted and delivering. Both
+	 * fit the ~19 chars next to the label only in compact form, so the two
+	 * share one token: " BTN 12% STK", " BTN 12%", or " STK". */
+	wchar_t btn[24];
 	btn[0] = L'\0';
-	if (antilag && s.btn_lead_us)
-		sce_paf_swprintf(btn, 20, L"  BTN -%u.%u", MS_INT(s.btn_lead_us), MS_TENTH(s.btn_lead_us));
+	bool haveBtn = antilag && s.btn_presses;
+	bool haveStk = antilag && (s.flags & FPSVITA_STATF_STICKS);
+	if (haveBtn)
+		sce_paf_swprintf(btn, 24, haveStk ? L" BTN %u%% STK" : L" BTN %u%%",
+		                 (unsigned)(s.btn_early * 100u / s.btn_presses));
+	else if (haveStk)
+		sce_paf_swprintf(btn, 24, L" STK");
 	if (!antilag)
 		setRow(ROW_ANTILAG, L"OFF");
 	else if (s.jit_slack_us)
-		setRow(ROW_ANTILAG, L"%u.%u ms / %u%ls", MS_INT(s.jit_slack_us), MS_TENTH(s.jit_slack_us), (unsigned)s.jit_missed, btn);
+		setRow(ROW_ANTILAG, L"%u.%u ms/%u%ls", MS_INT(s.jit_slack_us), MS_TENTH(s.jit_slack_us), (unsigned)s.jit_missed, btn);
 	else
 		setRow(ROW_ANTILAG, L"ON / %u%ls", (unsigned)s.jit_missed, btn);
 

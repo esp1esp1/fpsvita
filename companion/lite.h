@@ -45,3 +45,4 @@ LITE_UNUSED static void fpsvitaSetStats(const FpsvitaStats *in) { (void)in; }
 LITE_UNUSED static int fpsvitaSetFrameBufImmediate(const void *fb) { (void)fb; return -1; }
 LITE_UNUSED static void fpsvitaSetPanel(int32_t hz) { (void)hz; }   /* no kernel: stock refresh */
 LITE_UNUSED static int fpsvitaGetButtons(FpsvitaButtons *out) { (void)out; return -1; }   /* no kernel: SceCtrl sampling */
+LITE_UNUSED static int fpsvitaGetSticks(FpsvitaSticks *out) { (void)out; return -1; }
